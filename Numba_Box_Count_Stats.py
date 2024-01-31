@@ -177,14 +177,14 @@ def processDataFile(filename, Nframes):
 
 
 @njit(parallel=True, fastmath=True)
-def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes, sep_sizes):
+def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes, sep_sizes, strip_mode):
     CountMs = nblist()
     for box_index in range(len(box_sizes)):
         print("Counting boxes L =", box_sizes[box_index], ", sep =", sep_sizes[box_index])
         num_timesteps = len(x)
         SepSize = box_sizes[box_index] + sep_sizes[box_index]
         num_boxes_x = int(np.floor(window_size_x / SepSize))
-        num_boxes_y = int(np.floor(window_size_y / SepSize))
+        num_boxes_y = int(np.floor(window_size_y / SepSize)) if not strip_mode else 1
         
         assert num_boxes_x > 0, "Nx was zero"
         assert num_boxes_y > 0, "Ny was zero"
@@ -210,12 +210,12 @@ def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes, sep
 
                 # find correct box and increment counts
                 target_box_x = int(np.floor(xt[i] / SepSize))
-                target_box_y = int(np.floor(yt[i] / SepSize))
+                target_box_y = int(np.floor(yt[i] / SepSize)) if not strip_mode else 0
 
                 # if the target box doesn't entirely fit within the window, discard the point
                 if (target_box_x+1.0) * SepSize > window_size_x:
                     continue
-                if (target_box_y+1.0) * SepSize > window_size_y:
+                if (target_box_y+1.0) * SepSize > window_size_y and not strip_mode:
                     continue
 
                 # discard points that are in the sep border around the edge of the box
@@ -223,7 +223,7 @@ def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes, sep
                 distance_into_box_y = np.fmod(yt[i], SepSize)
                 if np.abs(distance_into_box_x-0.5*SepSize) >= box_sizes[box_index]/2.0:
                     continue
-                if np.abs(distance_into_box_y-0.5*SepSize) >= box_sizes[box_index]/2.0:
+                if np.abs(distance_into_box_y-0.5*SepSize) >= box_sizes[box_index]/2.0 and not strip_mode:
                     continue
                     
                 # add this particle to the stats
@@ -258,7 +258,7 @@ def computeMeanAndSecondMoment(matrix):
 
     return av, variance
 
-def Calc_and_Output_Stats(infile, Nframes, window_size_x, window_size_y, box_sizes, sep_sizes):
+def Calc_and_Output_Stats(infile, Nframes, window_size_x, window_size_y, box_sizes, sep_sizes, strip_mode=False):
     assert len(box_sizes) == len(sep_sizes), "box_sizes and sep_sizes should have the same length"
 
     #CountMs = processDataFile_and_Count(infile, Nframes, Lx, Ly, Lbs, sep)
@@ -267,7 +267,7 @@ def Calc_and_Output_Stats(infile, Nframes, window_size_x, window_size_y, box_siz
     print("Compiling fast counting function (this may take a min. or so)")
     Xnb = nblist(np.array(xi) for xi in Xs)
     Ynb = nblist(np.array(yi) for yi in Ys)
-    CountMs = processDataFile_and_Count(Xnb, Ynb, window_size_x, window_size_y, box_sizes, sep_sizes)
+    CountMs = processDataFile_and_Count(Xnb, Ynb, window_size_x, window_size_y, box_sizes, sep_sizes, strip_mode)
 
     N_Stats = np.zeros((len(box_sizes), 5))
 

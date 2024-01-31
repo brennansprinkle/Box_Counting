@@ -14,6 +14,8 @@ N2_mean, N2_std, N_stats = countoscope.Calc_and_Output_Stats(infile=f"data.dat",
 ```
 `data.dat` should be a text file containing rows of x, y, t values, whitespace separated. `N2_mean` and `N2_std` are arrays of shape (len(box_sizes) x Nframes). `N_stats` is an array of shape (len(box_sizes) x 5) where each row is box size, particle number mean, particle number variance, particle number variance sem_lb(?), particle number variance sem_ub(?)
 
+Pass the optional parameter `strip_mode=True` to count particles in vertical strips (of width `box_sizes`) instead of boxes
+
 # C++ box counting
 To run the code with a linux OS, first navigate to the working directory in a treminal and compile the C++ module with `make`. If you're running the code on MAC_OS, then rename the file `Makefile` to `Makefile_Linux` and the file `Makefile_MACOS` to `Makefile`.
 The C++ module has dependencies:
