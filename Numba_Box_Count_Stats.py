@@ -56,6 +56,7 @@ def msd_coords(Xs,Ys):
 
 
 def outputMatrixToFile(matrix, filename):
+    # currently unused?
     np.savetxt(filename, matrix, delimiter=' ', fmt='%.10f')
     print("Matrix data has been written to", filename)
 
@@ -257,7 +258,7 @@ def computeMeanAndSecondMoment(matrix):
 
     return av, variance
 
-def Calc_and_Output_Stats(infile, outfile, Nframes, window_size_x, window_size_y, box_sizes, sep_sizes):
+def Calc_and_Output_Stats(infile, Nframes, window_size_x, window_size_y, box_sizes, sep_sizes):
     assert len(box_sizes) == len(sep_sizes), "box_sizes and sep_sizes should have the same length"
 
     #CountMs = processDataFile_and_Count(infile, Nframes, Lx, Ly, Lbs, sep)
@@ -269,6 +270,9 @@ def Calc_and_Output_Stats(infile, outfile, Nframes, window_size_x, window_size_y
     CountMs = processDataFile_and_Count(Xnb, Ynb, window_size_x, window_size_y, box_sizes, sep_sizes)
 
     N_Stats = np.zeros((len(box_sizes), 5))
+
+    MSD_means = np.zeros((len(box_sizes), len(Xs)))
+    MSD_stds  = np.zeros((len(box_sizes), len(Xs)))
 
     for box_index in range(len(box_sizes)):
         print("Processing Box size:", box_sizes[box_index])
@@ -294,17 +298,14 @@ def Calc_and_Output_Stats(infile, outfile, Nframes, window_size_x, window_size_y
 
         MSDs = msd_matrix(CountMs[box_index])
 
-        MSDmean = np.mean(MSDs, axis=0)
-        MSDsem = np.std(MSDs, axis=0) / np.sqrt(MSDs.shape[0])
-        Lstr = format(box_sizes[box_index], '0.6f')
-        outputMatrixToFile(MSDmean, outfile + "_MSDmean_BoxL_" + Lstr + ".txt")
-        outputMatrixToFile(MSDsem, outfile + "_MSDerror_BoxL_" + Lstr + ".txt")
+        MSD_means[box_index, :] = np.mean(MSDs, axis=0)
+        MSD_stds [box_index, :] = np.std (MSDs, axis=0)
 
-    outputMatrixToFile(N_Stats, outfile + "_N_stats.txt")
-
+    return MSD_means, MSD_stds, N_Stats
  
 
 def Calc_MSD_and_Output(infile, outfile, Nframes):
+    # currently unused
     #CountMs = processDataFile_and_Count(infile, Nframes, Lx, Ly, Lbs, sep)
     Xs,Ys = processDataFile(infile, Nframes)
     print("Done with data read")
