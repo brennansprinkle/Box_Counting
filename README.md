@@ -16,6 +16,15 @@ N2_mean, N2_std, N_stats = countoscope.Calc_and_Output_Stats(infile=f"data.dat",
 
 Pass the optional parameter `strip_mode=True` to count particles in vertical strips (of width `box_sizes`) instead of boxes
 
+For compatibility with a previous version of this library, when the output data was written straight to disk, use the following
+```py
+for i, L in enumerate(N_stats[:, 0]):
+    np.savetxt(f`{L}_mean.txt`, N2_mean[i, :], delimiter=' ', fmt='%.10f')
+    np.savetxt(f`{L}_std.txt`,  N2_std [i, :], delimiter=' ', fmt='%.10f')
+    
+np.savetxt(f`N_stats.txt`,  N_stats_, delimiter=' ', fmt='%.10f')
+```
+
 # C++ box counting
 To run the code with a linux OS, first navigate to the working directory in a treminal and compile the C++ module with `make`. If you're running the code on MAC_OS, then rename the file `Makefile` to `Makefile_Linux` and the file `Makefile_MACOS` to `Makefile`.
 The C++ module has dependencies:
@@ -27,4 +36,5 @@ The C++ module has dependencies:
 To run the pure python code, simply modify the main `Fast_Box_Stats_NoCpp.py` and run with `python Fast_Box_Stats_NoCpp.py`
 
 # Timescale integral
-The MATLAB file `timescale_integral.m` processes the data computed using `Fast_Box_Stats.py` by computing the timescale integral. 
+The MATLAB file `timescale_integral.m` processes the data computed using `Fast_Box_Stats.py` by computing the timescale integral.
+
