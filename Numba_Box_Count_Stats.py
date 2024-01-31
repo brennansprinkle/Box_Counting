@@ -2,14 +2,11 @@ import numpy as np
 import scipy.stats as stats
 from numba import jit, njit, prange, objmode
 from numba.typed import List as nblist
-import numba as nb
-import sys
 
 ###############################
 # These two function are from SE
 # https://stackoverflow.com/questions/34222272/computing-mean-square-displacement-using-python-and-fft
 ##############################
-
 
 def autocorrFFT(x):
     N = len(x)
@@ -64,6 +61,7 @@ def outputMatrixToFile(matrix, filename):
 
 
 def ConvertDataFile(filename):
+    # is this function unused?
     fileinput = open(filename, "r")
     if not fileinput:
         print("Error opening file:", filename)
@@ -148,72 +146,88 @@ def ConvertDataFile(filename):
 
 
 def processDataFile(filename, Nframes):
-    Xs = [[] for _ in range(Nframes)]
-    Ys = [[] for _ in range(Nframes)]
+    # returns (Xs, Ys) where Xs, Ys are lists, and Xs[t]/Ys[t] is a list of the x/y coordinates at time t
 
-    try:
-        with open(filename, "r") as fileinput:
-            file_contents = fileinput.readlines()
-            ind_p = 0
-            for line in file_contents:
-                values = line.split()
-                try:
-                    x = float(values[0])
-                    y = float(values[1])
-                    ind = round(float(values[2]))
-                    Xs[ind-1].append(x)
-                    Ys[ind-1].append(y)
-                    if ind_p != ind:
-                        print(ind)
-                    ind_p = ind
-                except (ValueError, IndexError):
-                    print("I can't read index "+str(ind_p)+" of the file")
-                    continue
-    except IOError:
-        print("Error opening file:", filename)
-        sys.exit()
+    with open(filename, "r") as fileinput:
+        file_contents = fileinput.readlines()
+        
+        Xs = [[] for _ in range(Nframes)]
+        Ys = [[] for _ in range(Nframes)]
+
+        previous_t = 0
+        for line in file_contents:
+            values = line.split()
+            try:
+                x = float(values[0])
+                y = float(values[1])
+                t = round(float(values[2]))
+                if t > Nframes:
+                    raise Exception(f"The file had a datapoint with time {t} greater than the supplied Nframes {Nframes}")
+                Xs[t-1].append(x)
+                Ys[t-1].append(y)
+                if previous_t != t: # this is kinda weird, what does this code do? Can the whole thing be done a better way?
+                    pass
+                previous_t = t
+            except (ValueError, IndexError) as err:
+                print(f"I can't read index {previous_t} of the file: '{line.strip()}', {err}")
+                raise err # this used to be `continue` but for now I see no reason to allow that
     
     return Xs, Ys
 
 
 @njit(parallel=True, fastmath=True)
-def processDataFile_and_Count(x, y, Lx, Ly, Lbox, sep):
+def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes, sep_sizes):
     CountMs = nblist()
-    for lbIdx in range(len(Lbox)):
-        print("Counting boxes L =", Lbox[lbIdx])
-        Times = len(x)
-        SepSize = Lbox[lbIdx] + sep[lbIdx]
-        Nx = int(np.floor(Lx / SepSize))
-        Ny = int(np.floor(Ly / SepSize))
-        Counts = np.zeros((Nx * Ny, Times), dtype=np.float32)
-        for nt in prange(Times):
-            xt = x[nt]
-            yt = y[nt]
-            Np = len(xt)
-            for i in range(Np):
+    for box_index in range(len(box_sizes)):
+        print("Counting boxes L =", box_sizes[box_index], ", sep =", sep_sizes[box_index])
+        num_timesteps = len(x)
+        SepSize = box_sizes[box_index] + sep_sizes[box_index]
+        num_boxes_x = int(np.floor(window_size_x / SepSize))
+        num_boxes_y = int(np.floor(window_size_y / SepSize))
+        
+        assert num_boxes_x > 0, "Nx was zero"
+        assert num_boxes_y > 0, "Ny was zero"
+        assert num_timesteps > 0, "Times was zero"
+
+        Counts = np.zeros((num_boxes_x * num_boxes_y, num_timesteps), dtype=np.float32)
+
+        for time_index in prange(num_timesteps):
+            xt = x[time_index]
+            yt = y[time_index]
+            num_points = len(xt) # number of x,y points available at this time
+
+            for i in range(num_points):
                 # periodic corrections
-                while xt[i] > Lx:
-                    xt[i] -= Lx
+                while xt[i] > window_size_x:
+                    xt[i] -= window_size_x
                 while xt[i] < 0.0:
-                    xt[i] += Lx
-                while yt[i] > Ly:
-                    yt[i] -= Ly
+                    xt[i] += window_size_x
+                while yt[i] > window_size_y:
+                    yt[i] -= window_size_y
                 while yt[i] < 0.0:
-                    yt[i] += Ly
+                    yt[i] += window_size_y
 
                 # find correct box and increment counts
-                II = int(np.floor(xt[i] / SepSize))
-                JJ = int(np.floor(yt[i] / SepSize))
-                Xmod = np.fmod(xt[i], SepSize)
-                Ymod = np.fmod(yt[i], SepSize)
+                target_box_x = int(np.floor(xt[i] / SepSize))
+                target_box_y = int(np.floor(yt[i] / SepSize))
 
-                if (II+1.0) * SepSize > Lx:
+                # if the target box doesn't entirely fit within the window, discard the point
+                if (target_box_x+1.0) * SepSize > window_size_x:
                     continue
-                if (JJ+1.0) * SepSize > Ly:
+                if (target_box_y+1.0) * SepSize > window_size_y:
                     continue
 
-                if max(np.abs(Xmod-0.5*SepSize), np.abs(Ymod-0.5*SepSize)) < Lbox[lbIdx]/2.0:
-                    Counts[II * Ny + JJ,nt] += 1.0
+                # discard points that are in the sep border around the edge of the box
+                distance_into_box_x = np.fmod(xt[i], SepSize)
+                distance_into_box_y = np.fmod(yt[i], SepSize)
+                if np.abs(distance_into_box_x-0.5*SepSize) >= box_sizes[box_index]/2.0:
+                    continue
+                if np.abs(distance_into_box_y-0.5*SepSize) >= box_sizes[box_index]/2.0:
+                    continue
+                    
+                # add this particle to the stats
+                Counts[target_box_x * num_boxes_y + target_box_y, time_index] += 1.0
+
         CountMs.append(Counts)
 
     print("Done with counting")
@@ -222,8 +236,12 @@ def processDataFile_and_Count(x, y, Lx, Ly, Lbox, sep):
 
 @njit(fastmath=True)
 def computeMeanAndSecondMoment(matrix):
+    # calculate the mean and variance of the provided array
+    # this function is equivalent to `return np.mean(matrix), np.var(matrix)`
+    
     numRows, numCols = matrix.shape
     n = numRows * numCols
+    assert n > 0, "numRows * numCols was zero"
 
     av = 0.0
     m2 = 0.0
@@ -239,27 +257,29 @@ def computeMeanAndSecondMoment(matrix):
 
     return av, variance
 
-def Calc_and_Output_Stats(infile, outfile, Nframes, Lx, Ly, Lbs, sep):
+def Calc_and_Output_Stats(infile, outfile, Nframes, window_size_x, window_size_y, box_sizes, sep_sizes):
+    assert len(box_sizes) == len(sep_sizes), "box_sizes and sep_sizes should have the same length"
+
     #CountMs = processDataFile_and_Count(infile, Nframes, Lx, Ly, Lbs, sep)
     Xs,Ys = processDataFile(infile, Nframes)
     print("Done with data read")
     print("Compiling fast counting function (this may take a min. or so)")
     Xnb = nblist(np.array(xi) for xi in Xs)
     Ynb = nblist(np.array(yi) for yi in Ys)
-    CountMs = processDataFile_and_Count(Xnb, Ynb, Lx, Ly, Lbs, sep)
+    CountMs = processDataFile_and_Count(Xnb, Ynb, window_size_x, window_size_y, box_sizes, sep_sizes)
 
-    N_Stats = np.zeros((len(Lbs), 5))
+    N_Stats = np.zeros((len(box_sizes), 5))
 
-    for lbIdx in range(len(Lbs)):
-        print("Processing Box size:", Lbs[lbIdx])
+    for box_index in range(len(box_sizes)):
+        print("Processing Box size:", box_sizes[box_index])
 
-        N_Stats[lbIdx, 0] = Lbs[lbIdx]
+        N_Stats[box_index, 0] = box_sizes[box_index]
         #mean, variance, variance_sem_lb, variance_sem_ub = computeMeanAndSecondMoment(CountMs[lbIdx])
-        mean_N, variance = computeMeanAndSecondMoment(CountMs[lbIdx])
+        mean_N, variance = computeMeanAndSecondMoment(CountMs[box_index])
 
         ####################
         alpha = 0.01
-        df = 1.0 * CountMs[lbIdx].size - 1.0
+        df = 1.0 * CountMs[box_index].size - 1.0
         chi_lb = stats.chi2.ppf(0.5 * alpha, df)
         chi_ub = stats.chi2.ppf(1.0 - 0.5 * alpha, df)
 
@@ -267,16 +287,16 @@ def Calc_and_Output_Stats(infile, outfile, Nframes, Lx, Ly, Lbs, sep):
         variance_sem_ub = (df / chi_ub) * variance
         ####################
 
-        N_Stats[lbIdx, 1] = mean_N
-        N_Stats[lbIdx, 2] = variance
-        N_Stats[lbIdx, 3] = variance_sem_lb
-        N_Stats[lbIdx, 4] = variance_sem_ub
+        N_Stats[box_index, 1] = mean_N
+        N_Stats[box_index, 2] = variance
+        N_Stats[box_index, 3] = variance_sem_lb
+        N_Stats[box_index, 4] = variance_sem_ub
 
-        MSDs = msd_matrix(CountMs[lbIdx])
+        MSDs = msd_matrix(CountMs[box_index])
 
         MSDmean = np.mean(MSDs, axis=0)
         MSDsem = np.std(MSDs, axis=0) / np.sqrt(MSDs.shape[0])
-        Lstr = format(Lbs[lbIdx], '0.6f')
+        Lstr = format(box_sizes[box_index], '0.6f')
         outputMatrixToFile(MSDmean, outfile + "_MSDmean_BoxL_" + Lstr + ".txt")
         outputMatrixToFile(MSDsem, outfile + "_MSDerror_BoxL_" + Lstr + ".txt")
 
