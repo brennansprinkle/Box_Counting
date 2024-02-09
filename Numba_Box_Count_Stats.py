@@ -177,14 +177,15 @@ def processDataFile(filename, Nframes):
 
 
 @njit(parallel=True, fastmath=True)
-def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes, sep_sizes, strip_mode):
+def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes_x, box_sizes_y, sep_sizes):
     CountMs = nblist()
-    for box_index in range(len(box_sizes)):
-        print("Counting boxes L =", box_sizes[box_index], ", sep =", sep_sizes[box_index])
+    for box_index in range(len(box_sizes_x)):
+        print("Counting boxes L =", box_sizes_x[box_index], "*", box_sizes_y[box_index], ", sep =", sep_sizes[box_index])
         num_timesteps = len(x)
-        SepSize = box_sizes[box_index] + sep_sizes[box_index]
-        num_boxes_x = int(np.floor(window_size_x / SepSize))
-        num_boxes_y = int(np.floor(window_size_y / SepSize)) if not strip_mode else 1
+        SepSize_x = box_sizes_x[box_index] + sep_sizes[box_index]
+        SepSize_y = box_sizes_y[box_index] + sep_sizes[box_index]
+        num_boxes_x = int(np.floor(window_size_x / SepSize_x))
+        num_boxes_y = int(np.floor(window_size_y / SepSize_y))
         
         assert num_boxes_x > 0, "Nx was zero"
         assert num_boxes_y > 0, "Ny was zero"
@@ -195,7 +196,7 @@ def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes, sep
         for time_index in prange(num_timesteps):
             xt = x[time_index]
             yt = y[time_index]
-            num_points = len(xt) # number of x,y points available at this time
+            num_points = len(xt) # number of x,y points available at this timestep
 
             for i in range(num_points):
                 # periodic corrections
@@ -208,22 +209,22 @@ def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes, sep
                 while yt[i] < 0.0:
                     yt[i] += window_size_y
 
-                # find correct box and increment counts
-                target_box_x = int(np.floor(xt[i] / SepSize))
-                target_box_y = int(np.floor(yt[i] / SepSize)) if not strip_mode else 0
+                # find target box
+                target_box_x = int(np.floor(xt[i] / SepSize_x))
+                target_box_y = int(np.floor(yt[i] / SepSize_y))
 
                 # if the target box doesn't entirely fit within the window, discard the point
-                if (target_box_x+1.0) * SepSize > window_size_x:
+                if (target_box_x+1.0) * SepSize_x > window_size_x:
                     continue
-                if (target_box_y+1.0) * SepSize > window_size_y and not strip_mode:
+                if (target_box_y+1.0) * SepSize_y > window_size_y:
                     continue
 
                 # discard points that are in the sep border around the edge of the box
-                distance_into_box_x = np.fmod(xt[i], SepSize)
-                distance_into_box_y = np.fmod(yt[i], SepSize)
-                if np.abs(distance_into_box_x-0.5*SepSize) >= box_sizes[box_index]/2.0:
+                distance_into_box_x = np.fmod(xt[i], SepSize_x)
+                distance_into_box_y = np.fmod(yt[i], SepSize_y)
+                if np.abs(distance_into_box_x-0.5*SepSize_x) >= box_sizes_x[box_index]/2.0:
                     continue
-                if np.abs(distance_into_box_y-0.5*SepSize) >= box_sizes[box_index]/2.0 and not strip_mode:
+                if np.abs(distance_into_box_y-0.5*SepSize_y) >= box_sizes_y[box_index]/2.0:
                     continue
                     
                 # add this particle to the stats
@@ -258,26 +259,57 @@ def computeMeanAndSecondMoment(matrix):
 
     return av, variance
 
-def Calc_and_Output_Stats(infile, Nframes, window_size_x, window_size_y, box_sizes, sep_sizes, strip_mode=False):
-    assert len(box_sizes) == len(sep_sizes), "box_sizes and sep_sizes should have the same length"
+def Calc_and_Output_Stats(infile, Nframes, window_size_x, window_size_y, sep_sizes, box_sizes=None, box_sizes_x=None, box_sizes_y=None):
+    ### input parameter processing
+    if box_sizes is not None:
+        assert box_sizes_x is None and box_sizes_y is None, "if parameter box_sizes is provided, neither box_sizes_x nor box_sizes_y should be provided"
+        box_sizes_x = box_sizes
+        box_sizes_y = box_sizes
+    else:
+        assert box_sizes_x is not None and box_sizes_y is not None, "if box_sizes is not provided, both box_sizes_x and box_sizes_y should be provided"
 
+        if np.isscalar(box_sizes_x):
+            assert not np.isscalar(box_sizes_y), "if box_sizes_x is provided as a scalar, box_sizes_y should be an array"
+            box_sizes_x = np.full_like(box_sizes_y, box_sizes_x)
+        elif np.isscalar(box_sizes_y):
+            assert not np.isscalar(box_sizes_x), "if box_sizes_y is provided as a scalar, box_sizes_x should be an array"
+            box_sizes_y = np.full_like(box_sizes_x, box_sizes_y)
+        
+        assert len(box_sizes_x) == len(box_sizes_y)
+    
+    if np.isscalar(sep_sizes):
+        sep_sizes = np.full_like(box_sizes_x, sep_sizes)
+    else:
+        assert len(box_sizes_x) == len(sep_sizes), "box_sizes(_x) and sep_sizes should have the same length"
+
+    box_sizes_x = np.array(box_sizes_x) # ensure these are numpy arrays, not python lists or tuples
+    box_sizes_y = np.array(box_sizes_y)
+    sep_sizes   = np.array(sep_sizes)
+
+    assert np.all(box_sizes_x < window_size_x), "None of box_sizes(_x) can be bigger than window_size_x"
+    assert np.all(box_sizes_y < window_size_y), "None of box_sizes(_y) can be bigger than window_size_y"
+    assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_x"
+    assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_y"
+
+    ### calculation
     #CountMs = processDataFile_and_Count(infile, Nframes, Lx, Ly, Lbs, sep)
     Xs,Ys = processDataFile(infile, Nframes)
     print("Done with data read")
     print("Compiling fast counting function (this may take a min. or so)")
     Xnb = nblist(np.array(xi) for xi in Xs)
     Ynb = nblist(np.array(yi) for yi in Ys)
-    CountMs = processDataFile_and_Count(Xnb, Ynb, window_size_x, window_size_y, box_sizes, sep_sizes, strip_mode)
+    CountMs = processDataFile_and_Count(Xnb, Ynb, window_size_x=window_size_x, window_size_y=window_size_y,
+                                        box_sizes_x=box_sizes_x, box_sizes_y=box_sizes_y, sep_sizes=sep_sizes)
 
-    N_Stats = np.zeros((len(box_sizes), 5))
+    N_Stats = np.zeros((len(box_sizes_x), 5))
 
-    MSD_means = np.zeros((len(box_sizes), len(Xs)))
-    MSD_stds  = np.zeros((len(box_sizes), len(Xs)))
+    MSD_means = np.zeros((len(box_sizes_x), len(Xs)))
+    MSD_stds  = np.zeros((len(box_sizes_x), len(Xs)))
 
-    for box_index in range(len(box_sizes)):
-        print("Processing Box size:", box_sizes[box_index])
+    for box_index in range(len(box_sizes_x)):
+        print("Processing Box size:", box_sizes_x[box_index], "*", box_sizes_y[box_index])
 
-        N_Stats[box_index, 0] = box_sizes[box_index]
+        N_Stats[box_index, 0] = box_sizes_x[box_index]
         #mean, variance, variance_sem_lb, variance_sem_ub = computeMeanAndSecondMoment(CountMs[lbIdx])
         mean_N, variance = computeMeanAndSecondMoment(CountMs[box_index])
 

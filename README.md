@@ -1,11 +1,11 @@
 # Box_Counting
 Some codes to count particles in boxes and calculate statisics
 
-To install, copy this directory into your site-packages directory (eg `~/.local/lib/python3.10/site-packages`)
+To install, copy this directory into your site-packages directory (eg `~/.local/lib/python3.10/site-packages/Box_Counting`)
 
 To use
 ```py
-import Box_Counting as countoscope
+import Box_Counting.Numba_Box_Count_Stats as countoscope
 
 N2_mean, N2_std, N_stats = countoscope.Calc_and_Output_Stats(infile=f"data.dat", 
                                                              Nframes=2400, 
@@ -14,15 +14,18 @@ N2_mean, N2_std, N_stats = countoscope.Calc_and_Output_Stats(infile=f"data.dat",
 ```
 `data.dat` should be a text file containing rows of x, y, t values, whitespace separated. `N2_mean` and `N2_std` are arrays of shape (len(box_sizes) x Nframes). `N_stats` is an array of shape (len(box_sizes) x 5) where each row is box size, particle number mean, particle number variance, particle number variance sem_lb(?), particle number variance sem_ub(?)
 
-Pass the optional parameter `strip_mode=True` to count particles in vertical strips (of width `box_sizes`) instead of boxes
+You can also count on rectangular boxes, based on the input parameters:
+* if only `box_sizes` is provided, the boxes will be square, width and height of box `i` equal to `box_sizes[i]`.
+* if `box_sizes_x` and `box_sizes_y` are provided, box `i` will be of shape `box_sizes_x[i]` * `box_sizes_y[i]`.
+* however, if you want one of the width or height to be constant, you can just pass a single value to one of `box_sizes_x` or `box_sizes_y` and then all boxes will have the same width or height.
 
 For compatibility with a previous version of this library, when the output data was written straight to disk, use the following
 ```py
 for i, L in enumerate(N_stats[:, 0]):
     np.savetxt(f`{L}_mean.txt`, N2_mean[i, :], delimiter=' ', fmt='%.10f')
     np.savetxt(f`{L}_std.txt`,  N2_std [i, :], delimiter=' ', fmt='%.10f')
-    
-np.savetxt(f`N_stats.txt`,  N_stats_, delimiter=' ', fmt='%.10f')
+
+np.savetxt(f`N_stats.txt`,  N_stats, delimiter=' ', fmt='%.10f')
 ```
 
 # C++ box counting
