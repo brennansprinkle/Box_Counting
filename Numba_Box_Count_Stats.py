@@ -2,6 +2,7 @@ import numpy as np
 import scipy.stats as stats
 from numba import jit, njit, prange, objmode
 from numba.typed import List as nblist
+import warnings
 
 ###############################
 # These two function are from SE
@@ -161,8 +162,6 @@ def processDataFile(filename, Nframes):
 
             #next(fileinput) # this is for a header row
 
-            i = 0
-
             for line in fileinput:
                 values = line.split(',')
                 t = round(float(values[2]))
@@ -173,16 +172,12 @@ def processDataFile(filename, Nframes):
                     first = False
 
                 else:
-                    if t > max_t:
-                        max_t = t
-                    # print(t, min_t, type(t), type(min_t), t < min_t)
-                    if t < min_t:
-                        min_t = t
-
-                i+=1
-                if i>100:
-                    import sys
-                    sys.exit
+                    # if t > max_t:
+                    #     max_t = t
+                    # if t < min_t:
+                    #     min_t = t
+                    max_t = max(max_t, t)
+                    min_t = min(min_t, t)
 
             print(f'Nframes = {max_t}')
             assert min_t == 1, 'data timesteps should (presently) be 1-based'
@@ -190,6 +185,8 @@ def processDataFile(filename, Nframes):
         
     Xs = [[] for _ in range(Nframes)]
     Ys = [[] for _ in range(Nframes)]
+    min_x, max_x, min_y, max_y = None, None, None, None
+    first = True
 
     with open(filename, "r") as fileinput: # generators cannot be rewound so we open the file again
         #next(fileinput) # this is for the header row
@@ -206,12 +203,22 @@ def processDataFile(filename, Nframes):
                     raise Exception(f"The file had a datapoint with time {t} greater than the supplied Nframes {Nframes}")
                 Xs[t].append(x)
                 Ys[t].append(y)
+
+                if first:
+                    min_x, max_x = x, x
+                    min_y, max_y = y, y
+                    first = False
+                else:
+                    min_x = min(min_x, x)
+                    max_x = max(min_x, x)
+                    min_y = min(min_y, y)
+                    max_y = max(min_y, y)
                 
             except (ValueError, IndexError) as err:
                 print(f"I can't read a line of the file: '{line.strip()}', {err}")
                 raise err # this used to be `continue` but for now I see no reason to allow that
     
-    return Xs, Ys
+    return Xs, Ys, min_x, max_x, min_y, max_y
 
 def processDataArray(data):
     # returns (Xs, Ys) where Xs, Ys are lists, and Xs[t]/Ys[t] is a list of the x/y coordinates at time t
@@ -219,6 +226,11 @@ def processDataArray(data):
         
     Xs = [[] for _ in range(Nframes)]
     Ys = [[] for _ in range(Nframes)]
+
+    min_x = data[:, 0].min()
+    max_x = data[:, 0].max()
+    min_y = data[:, 1].min()
+    max_y = data[:, 1].max()
 
     for line_i in range(data.shape[0]):
         values = data[line_i, :]
@@ -231,7 +243,7 @@ def processDataArray(data):
         Xs[t-1].append(x)
         Ys[t-1].append(y)  
     
-    return Xs, Ys
+    return Xs, Ys, min_x, max_x, min_y, max_y
 
 
 @njit(parallel=True, fastmath=True)
@@ -257,16 +269,6 @@ def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes_x, b
             num_points = len(xt) # number of x,y points available at this timestep
 
             for i in range(num_points):
-                # periodic corrections
-                while xt[i] > window_size_x:
-                    xt[i] -= window_size_x
-                while xt[i] < 0.0:
-                    xt[i] += window_size_x
-                while yt[i] > window_size_y:
-                    yt[i] -= window_size_y
-                while yt[i] < 0.0:
-                    yt[i] += window_size_y
-
                 # find target box
                 target_box_x = int(np.floor(xt[i] / SepSize_x))
                 target_box_y = int(np.floor(yt[i] / SepSize_y))
@@ -293,7 +295,6 @@ def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes_x, b
     print("Done with counting")
     return CountMs
 
-
 @njit(fastmath=True)
 def computeMeanAndSecondMoment(matrix):
     # calculate the mean and variance of the provided array
@@ -317,8 +318,8 @@ def computeMeanAndSecondMoment(matrix):
 
     return av, variance
 
-def Calc_and_Output_Stats(data, window_size_x, window_size_y, sep_sizes, Nframes=None, box_sizes=None, box_sizes_x=None, box_sizes_y=None):
-    ### input parameter processing
+def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=None, Nframes=None, box_sizes=None, box_sizes_x=None, box_sizes_y=None):
+    # input parameter processing
     if box_sizes is not None:
         assert box_sizes_x is None and box_sizes_y is None, "if parameter box_sizes is provided, neither box_sizes_x nor box_sizes_y should be provided"
         box_sizes_x = box_sizes
@@ -344,24 +345,46 @@ def Calc_and_Output_Stats(data, window_size_x, window_size_y, sep_sizes, Nframes
     box_sizes_y = np.array(box_sizes_y)
     sep_sizes   = np.array(sep_sizes)
 
-    assert np.all(box_sizes_x < window_size_x), "None of box_sizes(_x) can be bigger than window_size_x"
-    assert np.all(box_sizes_y < window_size_y), "None of box_sizes(_y) can be bigger than window_size_y"
-    assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_x"
-    assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_y"
-
     if type(data) is str:
         assert Nframes is not None, 'if data is the address of a file, Nframes must be provided'
     else:
         assert Nframes is None, 'if data is an array, Nframes should not be provided'
     
-    print("Reading data")
+    # load the data and check it
     if type(data) is str:
-        Xs, Ys = processDataFile(data, Nframes)
+        print("Reading data from file")
+        Xs, Ys, min_x, max_x, min_y, max_y = processDataFile(data, Nframes)
     else:
+        print("Reading data from array")
         assert data[:, 2].min() == 1, 'data timesteps should (presently) be 1-based'
-        Xs, Ys = processDataArray(data)
+        Xs, Ys, min_x, max_x, min_y, max_y = processDataArray(data)
     print("Done with data read")
 
+    if window_size_x is None:
+        window_size_x = max_x
+        print(f'Assuming window_size_x={window_size_x:.1f}')
+    if window_size_y is None:
+        window_size_y = max_y
+        print(f'Assuming window_size_y={window_size_y:.1f}')
+    # TODO: we haven't done anything if min_x is not zero
+
+    assert min_x >= 0,             'An x-coordinate was supplied less than zero'
+    assert max_x <= window_size_x, 'An x-coordinate was supplied greater than window_size_x'
+    assert min_y >= 0,             'A y-coordinate was supplied less than zero'
+    assert max_y <= window_size_y, 'A y-coordinate was supplied greater than window_size_x'
+
+    warn_empty_thresh = 0.9
+    if (max_x-min_x) < warn_empty_thresh * window_size_x:
+        warnings.warn(f'x data fills less than {100*warn_empty_thresh:.0f}% of the window. Is window_size_x correct?')
+    if (max_y-min_y) < warn_empty_thresh * window_size_y:
+        warnings.warn(f'y data fills less than {100*warn_empty_thresh:.0f}% of the window. Is window_size_y correct?')
+    
+    assert np.all(box_sizes_x < window_size_x), "None of box_sizes(_x) can be bigger than window_size_x"
+    assert np.all(box_sizes_y < window_size_y), "None of box_sizes(_y) can be bigger than window_size_y"
+    assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_x"
+    assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_y"
+
+    # now do the actual counting
     print("Compiling fast counting function (this may take a min. or so)")
     Xnb = nblist(np.array(xi) for xi in Xs)
     Ynb = nblist(np.array(yi) for yi in Ys)
