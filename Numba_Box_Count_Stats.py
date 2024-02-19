@@ -372,9 +372,9 @@ def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=Non
 
     warn_empty_thresh = 0.9
     if (max_x-min_x) < warn_empty_thresh * window_size_x:
-        warnings.warn(f'x data fills less than {100*warn_empty_thresh:.0f}% of the window. Is window_size_x correct?')
+        warnings.warn(f'x data fills less than {100*(max_x-min_x)/window_size_x:.0f}% of the window. Is window_size_x correct?')
     if (max_y-min_y) < warn_empty_thresh * window_size_y:
-        warnings.warn(f'y data fills less than {100*warn_empty_thresh:.0f}% of the window. Is window_size_y correct?')
+        warnings.warn(f'y data fills less than {100*(max_y-min_y)/window_size_y:.0f}% of the window. Is window_size_y correct?')
     
     assert np.all(box_sizes_x < window_size_x), "None of box_sizes(_x) can be bigger than window_size_x"
     assert np.all(box_sizes_y < window_size_y), "None of box_sizes(_y) can be bigger than window_size_y"
@@ -387,6 +387,11 @@ def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=Non
     Ynb = nblist(np.array(yi) for yi in Ys)
     CountMs = processDataFile_and_Count(Xnb, Ynb, window_size_x=window_size_x, window_size_y=window_size_y,
                                         box_sizes_x=box_sizes_x, box_sizes_y=box_sizes_y, sep_sizes=sep_sizes)
+    
+    # check that there aren't no particles in the final time step
+    count_last_timestep = sum([count[:, -1].sum() for count in CountMs])
+    if count_last_timestep == 0:
+        warnings.warn(f'No particles were found for the final timestep. This may indicate that Nframes (={Nframes}) was set incorrectly.')
 
     N_Stats = np.zeros((len(box_sizes_x), 5))
 

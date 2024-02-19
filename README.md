@@ -21,6 +21,7 @@ The parameters to `Calc_and_Output_Stats` are:
   * the `t` values should be the 1-based index of the frame. They can be supplied as floats or integers.
 * `Nframes` optional if `data` is provided as an address to a file. If not supplied, we will find it, which adds another iteration over the input array. Not needed when `data` is an array.
 * `window_size_x` and `window_size_y` optional, the dimensions of the viewing window. If not supplied, the maximum x and y coordinate over all frames and particles will be used instead.
+  * it is assumed that the particles lie in `0 <= x <= window_size_x` and `0 <= y <= window_size_y`. Viewing windows not cornered at the origin are not currently supported.
 * The box sizes are specified as:
   * if only `box_sizes` is provided, the boxes will be square, width and height of box `i` equal to `box_sizes[i]`.
   * if `box_sizes_x` and `box_sizes_y` are provided, box `i` will be of shape `box_sizes_x[i]` * `box_sizes_y[i]`.
