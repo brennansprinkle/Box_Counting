@@ -33,6 +33,7 @@ def msd_fft1d(r):
 
 @njit(parallel=True, fastmath=True)
 def msd_matrix(matrix):
+    # calculates the MSDs of the rows of the provided matrix
     Nrows, Ncols = matrix.shape
     MSDs = np.zeros((Nrows,Ncols))
     for i in prange(Nrows):
@@ -184,7 +185,7 @@ def processDataFile(filename, Nframes):
                     sys.exit
 
             print(f'Nframes = {max_t}')
-            assert min_t == 1
+            assert min_t == 1, 'data timesteps should (presently) be 1-based'
             Nframes = max_t # this works because max_t is actually max(t)+1, and Nframes should be max(t)+1 when zero based
         
     Xs = [[] for _ in range(Nframes)]
@@ -200,9 +201,6 @@ def processDataFile(filename, Nframes):
                 values = line.split(',')
                 x = float(values[0])
                 y = float(values[1])
-                PIXEL = 0.288
-                x *= PIXEL
-                y *= PIXEL
                 t = round(float(values[2])) - 1 # t is 1-based as we asserted earlier
                 if t >= Nframes:
                     raise Exception(f"The file had a datapoint with time {t} greater than the supplied Nframes {Nframes}")
@@ -212,6 +210,25 @@ def processDataFile(filename, Nframes):
             except (ValueError, IndexError) as err:
                 print(f"I can't read a line of the file: '{line.strip()}', {err}")
                 raise err # this used to be `continue` but for now I see no reason to allow that
+    
+    return Xs, Ys
+
+def processDataArray(data, Nframes):
+    # returns (Xs, Ys) where Xs, Ys are lists, and Xs[t]/Ys[t] is a list of the x/y coordinates at time t
+        
+    Xs = [[] for _ in range(Nframes)]
+    Ys = [[] for _ in range(Nframes)]
+
+    for line_i in range(data.shape[0]):
+        values = data[line_i, :]
+        
+        x = values[0]
+        y = values[1]
+
+        t = round(values[2])
+        
+        Xs[t-1].append(x)
+        Ys[t-1].append(y)  
     
     return Xs, Ys
 
@@ -299,7 +316,7 @@ def computeMeanAndSecondMoment(matrix):
 
     return av, variance
 
-def Calc_and_Output_Stats(infile, Nframes, window_size_x, window_size_y, sep_sizes, box_sizes=None, box_sizes_x=None, box_sizes_y=None):
+def Calc_and_Output_Stats(data, Nframes, window_size_x, window_size_y, sep_sizes, box_sizes=None, box_sizes_x=None, box_sizes_y=None):
     ### input parameter processing
     if box_sizes is not None:
         assert box_sizes_x is None and box_sizes_y is None, "if parameter box_sizes is provided, neither box_sizes_x nor box_sizes_y should be provided"
@@ -331,10 +348,20 @@ def Calc_and_Output_Stats(infile, Nframes, window_size_x, window_size_y, sep_siz
     assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_x"
     assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_y"
 
-    ### calculation
-    #CountMs = processDataFile_and_Count(infile, Nframes, Lx, Ly, Lbs, sep)
-    Xs,Ys = processDataFile(infile, Nframes)
+    if type(data) is str:
+        assert Nframes is not None, 'if data is the address of a file, Nframes must be provided'
+    else:
+        assert Nframes is None, 'if data is an array, Nframes should not be provided'
+    
+    print("Reading data")
+    if type(data) is str:
+        Xs, Ys = processDataFile(data, Nframes)
+    else:
+        assert data[:, 2].min() == 1, 'data timesteps should (presently) be 1-based'
+        Nframes = data[:, 2].max() - 1
+        Xs, Ys = processDataArray(data, Nframes)
     print("Done with data read")
+
     print("Compiling fast counting function (this may take a min. or so)")
     Xnb = nblist(np.array(xi) for xi in Xs)
     Ynb = nblist(np.array(yi) for yi in Ys)
