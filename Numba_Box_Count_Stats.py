@@ -157,27 +157,21 @@ def processDataFile(filename, Nframes):
         with open(filename, "r") as fileinput:
 
             max_t = None
-            first = True
             min_t = None
 
             #next(fileinput) # this is for a header row
 
             for line in fileinput:
-                values = line.split(',')
-                t = round(float(values[2]))
+                try:
+                    values = line.split(',')
+                    t = round(float(values[2]))
 
-                if first:
-                    max_t = t
-                    min_t = t
-                    first = False
-
-                else:
-                    # if t > max_t:
-                    #     max_t = t
-                    # if t < min_t:
-                    #     min_t = t
                     max_t = max(max_t, t)
                     min_t = min(min_t, t)
+
+                except (ValueError, IndexError) as err:
+                    print(f"I can't read a line of the file: '{line.strip()}', {err}")
+                    raise err # this used to be `continue` but for now I see no reason to allow that
 
             print(f'Nframes = {max_t}')
             assert min_t == 1, 'data timesteps should (presently) be 1-based'
@@ -345,9 +339,7 @@ def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=Non
     box_sizes_y = np.array(box_sizes_y)
     sep_sizes   = np.array(sep_sizes)
 
-    if type(data) is str:
-        assert Nframes is not None, 'if data is the address of a file, Nframes must be provided'
-    else:
+    if type(data) is not str:
         assert Nframes is None, 'if data is an array, Nframes should not be provided'
     
     # load the data and check it
