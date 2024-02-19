@@ -156,18 +156,23 @@ def processDataFile(filename, Nframes):
 
         with open(filename, "r") as fileinput:
 
-            max_t = None
-            min_t = None
+            first = False
+            max_t, min_t = None, None
 
             #next(fileinput) # this is for a header row
 
             for line in fileinput:
                 try:
-                    values = line.split(',')
+                    values = line.split()
                     t = round(float(values[2]))
 
-                    max_t = max(max_t, t)
-                    min_t = min(min_t, t)
+                    if first:
+                        max_t = t
+                        min_t = t
+                        first = False
+                    else:
+                        max_t = max(max_t, t)
+                        min_t = min(min_t, t)
 
                 except (ValueError, IndexError) as err:
                     print(f"I can't read a line of the file: '{line.strip()}', {err}")
@@ -189,7 +194,7 @@ def processDataFile(filename, Nframes):
 
         for line in fileinput:
             try:
-                values = line.split(',')
+                values = line.split()
                 x = float(values[0])
                 y = float(values[1])
                 t = round(float(values[2])) - 1 # t is 1-based as we asserted earlier
