@@ -159,7 +159,7 @@ def processDataFile(filename, Nframes):
             first = True
             min_t = None
 
-            next(fileinput) # this is for a header row
+            #next(fileinput) # this is for a header row
 
             i = 0
 
@@ -192,7 +192,7 @@ def processDataFile(filename, Nframes):
     Ys = [[] for _ in range(Nframes)]
 
     with open(filename, "r") as fileinput: # generators cannot be rewound so we open the file again
-        next(fileinput) # this is for the header row
+        #next(fileinput) # this is for the header row
 
         print('Loading data')
 
@@ -213,8 +213,9 @@ def processDataFile(filename, Nframes):
     
     return Xs, Ys
 
-def processDataArray(data, Nframes):
+def processDataArray(data):
     # returns (Xs, Ys) where Xs, Ys are lists, and Xs[t]/Ys[t] is a list of the x/y coordinates at time t
+    Nframes = int(data[:, 2].max()) # this works because max_t is actually max(t)+1, and Nframes should be max(t)+1 when zero based
         
     Xs = [[] for _ in range(Nframes)]
     Ys = [[] for _ in range(Nframes)]
@@ -316,7 +317,7 @@ def computeMeanAndSecondMoment(matrix):
 
     return av, variance
 
-def Calc_and_Output_Stats(data, Nframes, window_size_x, window_size_y, sep_sizes, box_sizes=None, box_sizes_x=None, box_sizes_y=None):
+def Calc_and_Output_Stats(data, window_size_x, window_size_y, sep_sizes, Nframes=None, box_sizes=None, box_sizes_x=None, box_sizes_y=None):
     ### input parameter processing
     if box_sizes is not None:
         assert box_sizes_x is None and box_sizes_y is None, "if parameter box_sizes is provided, neither box_sizes_x nor box_sizes_y should be provided"
@@ -358,8 +359,7 @@ def Calc_and_Output_Stats(data, Nframes, window_size_x, window_size_y, sep_sizes
         Xs, Ys = processDataFile(data, Nframes)
     else:
         assert data[:, 2].min() == 1, 'data timesteps should (presently) be 1-based'
-        Nframes = data[:, 2].max() - 1
-        Xs, Ys = processDataArray(data, Nframes)
+        Xs, Ys = processDataArray(data)
     print("Done with data read")
 
     print("Compiling fast counting function (this may take a min. or so)")
