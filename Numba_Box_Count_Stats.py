@@ -148,29 +148,69 @@ def ConvertDataFile(filename):
 
 def processDataFile(filename, Nframes):
     # returns (Xs, Ys) where Xs, Ys are lists, and Xs[t]/Ys[t] is a list of the x/y coordinates at time t
+    if Nframes is None:
+        # gonna have to find out how many frames for ourselves!
+        print('Finding Nframes')
 
-    with open(filename, "r") as fileinput:
-        file_contents = fileinput.readlines()
+        with open(filename, "r") as fileinput:
+
+            max_t = None
+            first = True
+            min_t = None
+
+            next(fileinput) # this is for a header row
+
+            i = 0
+
+            for line in fileinput:
+                values = line.split(',')
+                t = round(float(values[2]))
+
+                if first:
+                    max_t = t
+                    min_t = t
+                    first = False
+
+                else:
+                    if t > max_t:
+                        max_t = t
+                    # print(t, min_t, type(t), type(min_t), t < min_t)
+                    if t < min_t:
+                        min_t = t
+
+                i+=1
+                if i>100:
+                    import sys
+                    sys.exit
+
+            print(f'Nframes = {max_t}')
+            assert min_t == 1
+            Nframes = max_t # this works because max_t is actually max(t)+1, and Nframes should be max(t)+1 when zero based
         
-        Xs = [[] for _ in range(Nframes)]
-        Ys = [[] for _ in range(Nframes)]
+    Xs = [[] for _ in range(Nframes)]
+    Ys = [[] for _ in range(Nframes)]
 
-        previous_t = 0
-        for line in file_contents:
-            values = line.split()
+    with open(filename, "r") as fileinput: # generators cannot be rewound so we open the file again
+        next(fileinput) # this is for the header row
+
+        print('Loading data')
+
+        for line in fileinput:
             try:
+                values = line.split(',')
                 x = float(values[0])
                 y = float(values[1])
-                t = round(float(values[2]))
-                if t > Nframes:
+                PIXEL = 0.288
+                x *= PIXEL
+                y *= PIXEL
+                t = round(float(values[2])) - 1 # t is 1-based as we asserted earlier
+                if t >= Nframes:
                     raise Exception(f"The file had a datapoint with time {t} greater than the supplied Nframes {Nframes}")
-                Xs[t-1].append(x)
-                Ys[t-1].append(y)
-                if previous_t != t: # this is kinda weird, what does this code do? Can the whole thing be done a better way?
-                    pass
-                previous_t = t
+                Xs[t].append(x)
+                Ys[t].append(y)
+                
             except (ValueError, IndexError) as err:
-                print(f"I can't read index {previous_t} of the file: '{line.strip()}', {err}")
+                print(f"I can't read a line of the file: '{line.strip()}', {err}")
                 raise err # this used to be `continue` but for now I see no reason to allow that
     
     return Xs, Ys
