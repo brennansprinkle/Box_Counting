@@ -26,7 +26,8 @@ The parameters to `Calc_and_Output_Stats` are:
   * if only `box_sizes` is provided, the boxes will be square, width and height of box `i` equal to `box_sizes[i]`.
   * if `box_sizes_x` and `box_sizes_y` are provided, box `i` will be of shape `box_sizes_x[i]` * `box_sizes_y[i]`.
   * however, if you want one of the width or height to be constant, you can just pass a single value to one of `box_sizes_x` or `box_sizes_y` and then all boxes will have the same width or height.
-* `sep_sizes` should be an array of the same size as `box_sizes`/`box_sizes_x`/`box_sizes_y`-
+* `sep_sizes` should be an array of the same size as `box_sizes`/`box_sizes_x`/`box_sizes_y`
+  * if any elements of `sep_sizes` are negative, the boxes will overlap. This causes the library to use a different algorithm to count the particles which is substantially slower. You should be careful when choosing the overlaps; if the overlap is a rational fraction of the box size then some boxes' edges will touch, leaving the counts correlated.
 
 The return values:
 * `N2_mean` and `N2_std` are arrays of shape (len(box_sizes) x Nframes).

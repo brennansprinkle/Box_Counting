@@ -249,12 +249,18 @@ def processDataArray(data):
 def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes_x, box_sizes_y, sep_sizes):
     CountMs = nblist()
     for box_index in range(len(box_sizes_x)):
-        print("Counting boxes L =", box_sizes_x[box_index], "*", box_sizes_y[box_index], ", sep =", sep_sizes[box_index])
         num_timesteps = len(x)
         SepSize_x = box_sizes_x[box_index] + sep_sizes[box_index]
         SepSize_y = box_sizes_y[box_index] + sep_sizes[box_index]
         num_boxes_x = int(np.floor(window_size_x / SepSize_x))
         num_boxes_y = int(np.floor(window_size_y / SepSize_y))
+        
+        print("Counting boxes L =", box_sizes_x[box_index], "*", box_sizes_y[box_index], ", sep =", sep_sizes[box_index], ", num =", num_boxes_x, 'x', num_boxes_y)
+
+        overlap = sep_sizes[box_index] < 0 # do the boxes overlap?
+
+        if overlap and (box_sizes_x[box_index] % np.abs(sep_sizes[box_index]) == 0 or box_sizes_y[box_index] % np.abs(sep_sizes[box_index]) == 0):
+                print('Negative overlap is an exact divisor of box size. This will lead to correlated boxes.')
         
         assert num_boxes_x > 0, "Nx was zero"
         assert num_boxes_y > 0, "Ny was zero"
@@ -262,32 +268,53 @@ def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes_x, b
 
         Counts = np.zeros((num_boxes_x * num_boxes_y, num_timesteps), dtype=np.float32)
 
-        for time_index in prange(num_timesteps):
-            xt = x[time_index]
-            yt = y[time_index]
-            num_points = len(xt) # number of x,y points available at this timestep
+        if overlap:
+            # if the boxes overlap we cannot use the original method (below)
+            # so we use this method instead, which is perhaps 25 times slower
+            for time_index in prange(num_timesteps):
+                xt = x[time_index]
+                yt = y[time_index]
+                num_points = len(xt) # number of x,y points available at this timestep
 
-            for i in range(num_points):
-                # find target box
-                target_box_x = int(np.floor(xt[i] / SepSize_x))
-                target_box_y = int(np.floor(yt[i] / SepSize_y))
+                for box_x_index in range(num_boxes_x):
+                    for box_y_index in range(num_boxes_y):
 
-                # if the target box doesn't entirely fit within the window, discard the point
-                if (target_box_x+1.0) * SepSize_x > window_size_x:
-                    continue
-                if (target_box_y+1.0) * SepSize_y > window_size_y:
-                    continue
+                        box_x_min = box_x_index * SepSize_x + sep_sizes[box_index]/2
+                        box_x_max = box_x_min + box_sizes_x[box_index]
+                        box_y_min = box_y_index * SepSize_y + sep_sizes[box_index]/2
+                        box_y_max = box_y_min + box_sizes_y[box_index]
 
-                # discard points that are in the sep border around the edge of the box
-                distance_into_box_x = np.fmod(xt[i], SepSize_x)
-                distance_into_box_y = np.fmod(yt[i], SepSize_y)
-                if np.abs(distance_into_box_x-0.5*SepSize_x) >= box_sizes_x[box_index]/2.0:
-                    continue
-                if np.abs(distance_into_box_y-0.5*SepSize_y) >= box_sizes_y[box_index]/2.0:
-                    continue
-                    
-                # add this particle to the stats
-                Counts[target_box_x * num_boxes_y + target_box_y, time_index] += 1.0
+                        for point in range(num_points):
+                            if box_x_min < xt[point] and xt[point] <= box_x_max and box_y_min < yt[point] and yt[point] <= box_y_max:
+                                Counts[box_x_index * num_boxes_y + box_y_index, time_index] += 1.0
+
+        else:
+            for time_index in prange(num_timesteps):
+                xt = x[time_index]
+                yt = y[time_index]
+                num_points = len(xt) # number of x,y points available at this timestep
+
+                for i in range(num_points):
+                    # find target box
+                    target_box_x = int(np.floor(xt[i] / SepSize_x))
+                    target_box_y = int(np.floor(yt[i] / SepSize_y))
+
+                    # if the target box doesn't entirely fit within the window, discard the point
+                    if (target_box_x+1.0) * SepSize_x > window_size_x:
+                        continue
+                    if (target_box_y+1.0) * SepSize_y > window_size_y:
+                        continue
+
+                    # discard points that are in the sep border around the edge of the box
+                    distance_into_box_x = np.fmod(xt[i], SepSize_x)
+                    distance_into_box_y = np.fmod(yt[i], SepSize_y)
+                    if np.abs(distance_into_box_x-0.5*SepSize_x) >= box_sizes_x[box_index]/2.0:
+                        continue
+                    if np.abs(distance_into_box_y-0.5*SepSize_y) >= box_sizes_y[box_index]/2.0:
+                        continue
+                        
+                    # add this particle to the stats
+                    Counts[target_box_x * num_boxes_y + target_box_y, time_index] += 1.0
 
         CountMs.append(Counts)
 
@@ -353,7 +380,7 @@ def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=Non
         Xs, Ys, min_x, max_x, min_y, max_y = processDataFile(data, Nframes)
     else:
         print("Reading data from array")
-        assert data[:, 2].min() == 1, 'data timesteps should (presently) be 1-based'
+        assert data[:, 2].min() == 1, f'data timesteps should (presently) be 1-based. The first timestep was {data[:, 2].min()}'
         Xs, Ys, min_x, max_x, min_y, max_y = processDataArray(data)
     print("Done with data read")
 
