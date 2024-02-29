@@ -8,7 +8,6 @@ To use
 import countoscope.Numba_Box_Count_Stats as countoscope
 
 N2_mean, N2_std, N_stats = countoscope.Calc_and_Output_Stats(data=f"data.dat", 
-                                                             Nframes=2400, 
                                                              window_size_x=217.6, window_size_y=174, 
                                                              box_sizes=Box_Ls, sep_sizes=sep)
 ```
@@ -18,8 +17,7 @@ The parameters to `Calc_and_Output_Stats` are:
 * `data`. Either:
   * `data` should be a string, the address of a text file containing rows of x, y, t values, whitespace separated. 
   * or `data` should be provided as a 2D array where `data[i, 0:2]` is `[x, y, t]`
-  * the `t` values should be the 1-based index of the frame. They can be supplied as floats or integers.
-* `Nframes` optional if `data` is provided as an address to a file. If not supplied, we will find it, which adds another iteration over the input array. Not needed when `data` is an array.
+  * the `t` values should be the index of the frame. They can be 0-based or 1-based (or any other), and can be supplied as floats or integers.
 * `window_size_x` and `window_size_y` optional, the dimensions of the viewing window. If not supplied, the maximum x and y coordinate over all frames and particles will be used instead.
   * it is assumed that the particles lie in `0 <= x <= window_size_x` and `0 <= y <= window_size_y`. Viewing windows not cornered at the origin are not currently supported.
 * The box sizes are specified as:

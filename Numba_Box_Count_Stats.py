@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.stats as stats
-from numba import jit, njit, prange, objmode
-from numba.typed import List as nblist
+import numba
+import numba.typed
 import warnings
 
 ###############################
@@ -18,37 +18,37 @@ def autocorrFFT(x):
     n = N * np.ones(N) - np.arange(0, N)  # divide res(m) by (N-m)
     return res / n  # this is the autocorrelation in convention A
 
-@njit(fastmath=True)
+@numba.njit(fastmath=True)
 def msd_fft1d(r):
     N = len(r)
     D = np.square(r)
     D = np.append(D, 0)
-    with objmode(S2='float64[:]'):
+    with numba.objmode(S2='float64[:]'):
         S2 = autocorrFFT(r)
     Q = 2 * D.sum()
     S1 = np.zeros(N)
-    for m in prange(N):
+    for m in numba.prange(N):
         Q = Q - D[m-1] - D[N-m]
         S1[m] = Q / (N-m)
     return S1 - 2 * S2
 
-@njit(parallel=True, fastmath=True)
+@numba.njit(parallel=True, fastmath=True)
 def msd_matrix(matrix):
     # calculates the MSDs of the rows of the provided matrix
     Nrows, Ncols = matrix.shape
     MSDs = np.zeros((Nrows,Ncols))
-    for i in prange(Nrows):
+    for i in numba.prange(Nrows):
         #print(100.0 * ((1.0 * i) / (1.0 * N)), "percent done with MSD calc")
         MSD = msd_fft1d(matrix[i, :])
         MSDs[i,:] = MSD
     return MSDs
 
-@njit(parallel=True, fastmath=True)
+@numba.njit(parallel=True, fastmath=True)
 def msd_coords(Xs,Ys):
     numRows, numCols = Xs.shape
     MSDs = np.zeros((numRows, numCols))
 
-    for i in prange(numRows):
+    for i in numba.prange(numRows):
         xi = Xs[i, :]
         yi = Ys[i, :]
         row_i = msd_fft1d(xi) + msd_fft1d(yi)
@@ -147,107 +147,64 @@ def ConvertDataFile(filename):
 #     fileinput.close()
 #     return Xs, Ys
 
-
-def processDataFile(filename, Nframes):
-    # returns (Xs, Ys) where Xs, Ys are lists, and Xs[t]/Ys[t] is a list of the x/y coordinates at time t
-    if Nframes is None:
-        # gonna have to find out how many frames for ourselves!
-        print('Finding Nframes')
-
-        with open(filename, "r") as fileinput:
-
-            first = False
-            max_t, min_t = None, None
-
-            #next(fileinput) # this is for a header row
-
-            for line in fileinput:
-                try:
-                    values = line.split()
-                    t = round(float(values[2]))
-
-                    if first:
-                        max_t = t
-                        min_t = t
-                        first = False
-                    else:
-                        max_t = max(max_t, t)
-                        min_t = min(min_t, t)
-
-                except (ValueError, IndexError) as err:
-                    print(f"I can't read a line of the file: '{line.strip()}', {err}")
-                    raise err # this used to be `continue` but for now I see no reason to allow that
-
-            print(f'Nframes = {max_t}')
-            assert min_t == 1, 'data timesteps should (presently) be 1-based'
-            Nframes = max_t # this works because max_t is actually max(t)+1, and Nframes should be max(t)+1 when zero based
-        
-    Xs = [[] for _ in range(Nframes)]
-    Ys = [[] for _ in range(Nframes)]
-    min_x, max_x, min_y, max_y = None, None, None, None
-    first = True
-
-    with open(filename, "r") as fileinput: # generators cannot be rewound so we open the file again
-        #next(fileinput) # this is for the header row
-
-        print('Loading data')
-
-        for line in fileinput:
-            try:
-                values = line.split()
-                x = float(values[0])
-                y = float(values[1])
-                t = round(float(values[2])) - 1 # t is 1-based as we asserted earlier
-                if t >= Nframes:
-                    raise Exception(f"The file had a datapoint with time {t} greater than the supplied Nframes {Nframes}")
-                Xs[t].append(x)
-                Ys[t].append(y)
-
-                if first:
-                    min_x, max_x = x, x
-                    min_y, max_y = y, y
-                    first = False
-                else:
-                    min_x = min(min_x, x)
-                    max_x = max(min_x, x)
-                    min_y = min(min_y, y)
-                    max_y = max(min_y, y)
-                
-            except (ValueError, IndexError) as err:
-                print(f"I can't read a line of the file: '{line.strip()}', {err}")
-                raise err # this used to be `continue` but for now I see no reason to allow that
+def processDataFile(filename):
+    data = np.fromfile(filename, dtype=float, sep=' ')
+    #all_data = np.loadtxt('data/0.34_EKRM_trajs.dat', delimiter=',', skiprows=1)
+    data = data.reshape((-1, 4))
     
-    return Xs, Ys, min_x, max_x, min_y, max_y
+    return processDataArray(data)
 
+@numba.njit()
 def processDataArray(data):
-    # returns (Xs, Ys) where Xs, Ys are lists, and Xs[t]/Ys[t] is a list of the x/y coordinates at time t
-    Nframes = int(data[:, 2].max()) # this works because max_t is actually max(t)+1, and Nframes should be max(t)+1 when zero based
-        
-    Xs = [[] for _ in range(Nframes)]
-    Ys = [[] for _ in range(Nframes)]
+    # returns (Xs, Ys) where Xs, Ys are lists, and Xs[t]/Ys[t] is a list of the x/y coordinates at time tassert data[:, 2].min() == 1, f'data timesteps should (presently) be 1-based. The first timestep was {data[:, 2].min()}'
+    t0 = int(data[:, 2].min())
+    Nframes = int(data[:, 2].max()) + 1 - t0 # this works because max_t is actually max(t)+1, and Nframes should be max(t)+1 when zero based
 
-    min_x = data[:, 0].min()
-    max_x = data[:, 0].max()
-    min_y = data[:, 1].min()
-    max_y = data[:, 1].max()
+    # storing the data by continually appending to lists is incredibly slow
+    # so instead we use a numpy array
+    # but first we need to find the maximum number of simultaneous particles
+    num_points_at_time = np.zeros((Nframes), dtype='int')
+    for line_i in range(data.shape[0]):
+        values = data[line_i, :]
+        t = round(values[2])
+        num_points_at_time[t-t0] += 1
+ 
+    # then we add the particle coordinates into the numpy arrays
+    Xs_ = np.full((Nframes, num_points_at_time.max()), np.nan)
+    Ys_ = np.full((Nframes, num_points_at_time.max()), np.nan)
+    num_points_at_time = np.zeros((Nframes), dtype='int')
 
     for line_i in range(data.shape[0]):
         values = data[line_i, :]
         
         x = values[0]
         y = values[1]
-
         t = round(values[2])
-        
-        Xs[t-1].append(x)
-        Ys[t-1].append(y)  
-    
+
+        p = num_points_at_time[t-1]
+        Xs_[t-t0, p] = x
+        Ys_[t-t0, p] = y
+
+        num_points_at_time[t-t0] += 1
+
+    # finally we convert them back to python lists
+    # perhaps we could skip this step in the future
+    Xs = []
+    Ys = []
+    for t_index in range(Nframes):
+        Xs.append(list(Xs_[t_index, 0:num_points_at_time[t_index]]))
+        Ys.append(list(Ys_[t_index, 0:num_points_at_time[t_index]]))
+
+    min_x = data[:, 0].min()
+    max_x = data[:, 0].max()
+    min_y = data[:, 1].min()
+    max_y = data[:, 1].max()
     return Xs, Ys, min_x, max_x, min_y, max_y
 
 
-@njit(parallel=True, fastmath=True)
+@numba.njit(parallel=True, fastmath=True)
 def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes_x, box_sizes_y, sep_sizes):
-    CountMs = nblist()
+    CountMs = numba.typed.List()
     for box_index in range(len(box_sizes_x)):
         num_timesteps = len(x)
         SepSize_x = box_sizes_x[box_index] + sep_sizes[box_index]
@@ -271,7 +228,7 @@ def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes_x, b
         if overlap:
             # if the boxes overlap we cannot use the original method (below)
             # so we use this method instead, which is perhaps 25 times slower
-            for time_index in prange(num_timesteps):
+            for time_index in numba.prange(num_timesteps):
                 xt = x[time_index]
                 yt = y[time_index]
                 num_points = len(xt) # number of x,y points available at this timestep
@@ -289,7 +246,7 @@ def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes_x, b
                                 Counts[box_x_index * num_boxes_y + box_y_index, time_index] += 1.0
 
         else:
-            for time_index in prange(num_timesteps):
+            for time_index in numba.prange(num_timesteps):
                 xt = x[time_index]
                 yt = y[time_index]
                 num_points = len(xt) # number of x,y points available at this timestep
@@ -321,7 +278,7 @@ def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes_x, b
     print("Done with counting")
     return CountMs
 
-@njit(fastmath=True)
+@numba.njit(fastmath=True)
 def computeMeanAndSecondMoment(matrix):
     # calculate the mean and variance of the provided array
     # this function is equivalent to `return np.mean(matrix), np.var(matrix)`
@@ -344,7 +301,7 @@ def computeMeanAndSecondMoment(matrix):
 
     return av, variance
 
-def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=None, Nframes=None, box_sizes=None, box_sizes_x=None, box_sizes_y=None):
+def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=None, box_sizes=None, box_sizes_x=None, box_sizes_y=None):
     # input parameter processing
     if box_sizes is not None:
         assert box_sizes_x is None and box_sizes_y is None, "if parameter box_sizes is provided, neither box_sizes_x nor box_sizes_y should be provided"
@@ -370,17 +327,13 @@ def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=Non
     box_sizes_x = np.array(box_sizes_x) # ensure these are numpy arrays, not python lists or tuples
     box_sizes_y = np.array(box_sizes_y)
     sep_sizes   = np.array(sep_sizes)
-
-    if type(data) is not str:
-        assert Nframes is None, 'if data is an array, Nframes should not be provided'
     
     # load the data and check it
     if type(data) is str:
         print("Reading data from file")
-        Xs, Ys, min_x, max_x, min_y, max_y = processDataFile(data, Nframes)
+        Xs, Ys, min_x, max_x, min_y, max_y = processDataFile(data)
     else:
         print("Reading data from array")
-        assert data[:, 2].min() == 1, f'data timesteps should (presently) be 1-based. The first timestep was {data[:, 2].min()}'
         Xs, Ys, min_x, max_x, min_y, max_y = processDataArray(data)
     print("Done with data read")
 
@@ -410,15 +363,10 @@ def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=Non
 
     # now do the actual counting
     print("Compiling fast counting function (this may take a min. or so)")
-    Xnb = nblist(np.array(xi) for xi in Xs)
-    Ynb = nblist(np.array(yi) for yi in Ys)
+    Xnb = numba.typed.List(np.array(xi) for xi in Xs)
+    Ynb = numba.typed.List(np.array(yi) for yi in Ys)
     CountMs = processDataFile_and_Count(Xnb, Ynb, window_size_x=window_size_x, window_size_y=window_size_y,
                                         box_sizes_x=box_sizes_x, box_sizes_y=box_sizes_y, sep_sizes=sep_sizes)
-    
-    # check that there aren't no particles in the final time step
-    count_last_timestep = sum([count[:, -1].sum() for count in CountMs])
-    if count_last_timestep == 0:
-        warnings.warn(f'No particles were found for the final timestep. This may indicate that Nframes (={Nframes}) was set incorrectly.')
 
     N_Stats = np.zeros((len(box_sizes_x), 5))
 
