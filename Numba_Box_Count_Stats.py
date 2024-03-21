@@ -56,97 +56,6 @@ def msd_coords(Xs,Ys):
     
     return MSDs
 
-
-def outputMatrixToFile(matrix, filename):
-    # currently unused?
-    np.savetxt(filename, matrix, delimiter=' ', fmt='%.10f')
-    print("Matrix data has been written to", filename)
-
-
-def ConvertDataFile(filename):
-    # is this function unused?
-    fileinput = open(filename, "r")
-    if not fileinput:
-        print("Error opening file:", filename)
-        return
-
-    Ntimes = 0
-    x, y, z = [], [], []
-    aux1, aux2, aux3, aux4 = 0.0, 0.0, 0.0, 0.0
-
-    # Parse 'filename' to remove the extension (chars after a period) and add the string "_modified.txt" to the result.
-    inputFilename = filename
-    pos = inputFilename.rfind('.')
-    baseFilename = inputFilename[:pos]
-    outfile = baseFilename + "_modified.txt"
-
-    fileoutput = open(outfile, "w")
-    if not fileoutput:
-        print("Error opening output file:", outfile)
-        fileinput.close()
-        return
-
-    while True:
-        line = fileinput.readline().strip()
-        if not line:
-            break
-
-        parts = int(line)
-        Ntimes += 1
-        print(Ntimes)
-
-        x = np.zeros(parts)
-        y = np.zeros(parts)
-
-        # Read the data directly into the arrays and write to the output file
-        for i in range(parts):
-            values = fileinput.readline().split()
-            x[i] = float(values[0])
-            y[i] = float(values[1])
-            fileoutput.write("{:.6f} {:.6f} {}\n".format(x[i], y[i], Ntimes))
-
-    fileinput.close()
-    fileoutput.close()
-    return Ntimes
-
-# def processDataFile(filename, Nframes):
-#     Xs = [[] for _ in range(Nframes)]
-#     Ys = [[] for _ in range(Nframes)]
-
-#     fileinput = open(filename, "r")
-#     if not fileinput:
-#         print("Error opening file:", filename)
-#         return Xs, Ys
-
-#     ind, ind_p = 0, 0
-#     x, y = 0.0, 0.0
-
-#     frame = 0
-#     start = 0
-#     while True:
-#         line = fileinput.readline().strip()
-#         if not line:
-#             break
-
-#         values = line.split()
-#         x = float(values[0])
-#         y = float(values[1])
-#         ind = int(values[2])
-
-#         if frame == 0 and ind != 0:
-#             start = ind
-#             frame = 1
-#             ind_p = ind - 1
-#         if ind_p != ind:
-#             print(ind)
-        
-#         Xs[ind - start].append(x)
-#         Ys[ind - start].append(y)
-#         ind_p = ind
-
-#     fileinput.close()
-#     return Xs, Ys
-
 def processDataFile(filename):
     data = np.fromfile(filename, dtype=float, sep=' ')
     #all_data = np.loadtxt('data/0.34_EKRM_trajs.dat', delimiter=',', skiprows=1)
@@ -181,7 +90,7 @@ def processDataArray(data):
         y = values[1]
         t = round(values[2])
 
-        p = num_points_at_time[t-1]
+        p = num_points_at_time[t-t0]
         Xs_[t-t0, p] = x
         Ys_[t-t0, p] = y
 
@@ -217,14 +126,14 @@ def processDataFile_and_Count(x, y, window_size_x, window_size_y, box_sizes_x, b
         overlap = sep_sizes[box_index] < 0 # do the boxes overlap?
 
         if overlap and (box_sizes_x[box_index] % np.abs(sep_sizes[box_index]) == 0 or box_sizes_y[box_index] % np.abs(sep_sizes[box_index]) == 0):
-                print('Negative overlap is an exact divisor of box size. This will lead to correlated boxes.')
+            print('Negative overlap is an exact divisor of box size. This will lead to correlated boxes.')
         
         assert num_boxes_x > 0, "Nx was zero"
         assert num_boxes_y > 0, "Ny was zero"
         assert num_timesteps > 0, "Times was zero"
 
         Counts = np.zeros((num_boxes_x * num_boxes_y, num_timesteps), dtype=np.float32)
-
+        
         if overlap:
             # if the boxes overlap we cannot use the original method (below)
             # so we use this method instead, which is perhaps 25 times slower
@@ -327,12 +236,15 @@ def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=Non
     box_sizes_x = np.array(box_sizes_x) # ensure these are numpy arrays, not python lists or tuples
     box_sizes_y = np.array(box_sizes_y)
     sep_sizes   = np.array(sep_sizes)
+    assert np.all(- sep_sizes < box_sizes_x), '(-1) * sep_sizes[i] must always be smaller than box_sizes[i]'
+    assert np.all(- sep_sizes < box_sizes_y)
     
     # load the data and check it
     if type(data) is str:
         print("Reading data from file")
         Xs, Ys, min_x, max_x, min_y, max_y = processDataFile(data)
     else:
+        assert np.all(~np.isnan(data)), "nan was found in data"
         print("Reading data from array")
         Xs, Ys, min_x, max_x, min_y, max_y = processDataArray(data)
     print("Done with data read")
@@ -361,6 +273,13 @@ def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=Non
     assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_x"
     assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_y"
 
+    assert np.all(~np.isnan(box_sizes_x)), "nan was found in box_sizes_x"
+    assert np.all(~np.isnan(box_sizes_y)), "nan was found in box_sizes_y"
+    assert np.all(~np.isnan(sep_sizes)), "nan was found in sep_sizes"
+    for x_list, y_list in zip(Xs, Ys):
+        assert np.all(~np.isnan(x_list)), "nan was found in Xs"
+        assert np.all(~np.isnan(y_list)), "nan was found in Ys"
+
     # now do the actual counting
     print("Compiling fast counting function (this may take a min. or so)")
     Xnb = numba.typed.List(np.array(xi) for xi in Xs)
@@ -368,7 +287,7 @@ def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=Non
     CountMs = processDataFile_and_Count(Xnb, Ynb, window_size_x=window_size_x, window_size_y=window_size_y,
                                         box_sizes_x=box_sizes_x, box_sizes_y=box_sizes_y, sep_sizes=sep_sizes)
 
-    N_Stats = np.zeros((len(box_sizes_x), 5))
+    N_Stats = np.zeros((len(box_sizes_x), 6))
 
     MSD_means = np.zeros((len(box_sizes_x), len(Xs)))
     MSD_stds  = np.zeros((len(box_sizes_x), len(Xs)))
@@ -394,6 +313,7 @@ def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=Non
         N_Stats[box_index, 2] = variance
         N_Stats[box_index, 3] = variance_sem_lb
         N_Stats[box_index, 4] = variance_sem_ub
+        N_Stats[box_index, 5] = CountMs[box_index].shape[0] # number of boxes counted over
 
         MSDs = msd_matrix(CountMs[box_index])
 
@@ -401,18 +321,3 @@ def Calc_and_Output_Stats(data, sep_sizes, window_size_x=None, window_size_y=Non
         MSD_stds [box_index, :] = np.std (MSDs, axis=0)
 
     return MSD_means, MSD_stds, N_Stats
- 
-
-def Calc_MSD_and_Output(infile, outfile, Nframes):
-    # currently unused
-    #CountMs = processDataFile_and_Count(infile, Nframes, Lx, Ly, Lbs, sep)
-    Xs,Ys = processDataFile(infile, Nframes)
-    print("Done with data read")
-    Xs = np.array(Xs).T
-    Ys = np.array(Ys).T
-    print("calculating particle MSDs")
-    MSDs = msd_coords(Xs,Ys)
-    MSDmean = np.mean(MSDs, axis=0)
-    MSDsem = np.std(MSDs, axis=0) / np.sqrt(MSDs.shape[0])
-    outputMatrixToFile(MSDmean, outfile + "_particles_MSDmean.txt")
-    outputMatrixToFile(MSDsem, outfile + "_particles_MSDerror.txt")
