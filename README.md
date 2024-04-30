@@ -1,8 +1,19 @@
-# Box_Counting
-Some codes to count particles in boxes and calculate statisics
+# Box_Counting in python
+Some codes to count particles in boxes and calculate statistics of these fluctuating counts
 
+# Installation
 To install, clone this directory into your site-packages directory (eg `cd ~/.local/lib/python3.10/site-packages && git clone https://github.com/brennansprinkle/Box_Counting countoscope`)
+or simply download the codes
 
+# Content
+example_runcounting.py              * example code to run the counting algorithm and plot relevant curves
+test_data/example_dataset.txt       * example data set simulated from Brownian motion of non-interacting particles
+Box_Count_Stats.py                  * source codes to count particles in boxes and calculate statistics
+Numba_Box_Count_stats.py            * same as above but with just-in-time-compilation. Sometimes numba is not compatible with some machines.
+LICENSE                             * licence agreement
+Old_Codes/                          * old codes directory
+
+# Use
 To use
 ```py
 import countoscope.Numba_Box_Count_Stats as countoscope
@@ -11,7 +22,7 @@ N2_mean, N2_std, N_stats = countoscope.Calc_and_Output_Stats(data=f"data.dat",
                                                              window_size_x=217.6, window_size_y=174, 
                                                              box_sizes=Box_Ls, sep_sizes=sep)
 ```
-See the full example in `example.py`.
+See the full example in `example_runcounting.py` (which also includes plotting)
 
 The parameters to `Calc_and_Output_Stats` are:
 * `data`. Either:
@@ -28,19 +39,6 @@ The parameters to `Calc_and_Output_Stats` are:
   * if any elements of `sep_sizes` are negative, the boxes will overlap. This causes the library to use a different algorithm to count the particles which is substantially slower. You should be careful when choosing the overlaps; if the overlap is a rational fraction of the box size then some boxes' edges will touch, leaving the counts correlated.
 
 The return values:
-* `N2_mean` and `N2_std` are arrays of shape (len(box_sizes) x Nframes).
+* `N2_mean` and `N2_std` are arrays of shape (len(box_sizes) x Nframes) with number displacement fluctuations (N(t) - N(0))^2 in mean value over all boxes or their standard deviation over all boxes
 * `N_stats` is an array of shape (len(box_sizes) x 5) where each row is box size, particle number mean, particle number variance, particle number variance sem_lb, particle number variance sem_ub
-
-# C++ box counting
-To run the code with a linux OS, first navigate to the working directory in a treminal and compile the C++ module with `make`. If you're running the code on MAC_OS, then rename the file `Makefile` to `Makefile_Linux` and the file `Makefile_MACOS` to `Makefile`.
-The C++ module has dependencies:
-* pybind11 (install using eg `pip install pybind11`)
-* Eigen (download from https://eigen.tuxfamily.org/ and add to include path)
-* FFTW (download from https://www.fftw.org/download.html and add to include path)
-
-# Pure python box counting
-To run the pure python code, simply modify the main `Fast_Box_Stats_NoCpp.py` and run with `python Fast_Box_Stats_NoCpp.py`
-
-# Timescale integral
-The MATLAB file `timescale_integral.m` processes the data computed using `Fast_Box_Stats.py` by computing the timescale integral.
 
