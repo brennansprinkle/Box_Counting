@@ -336,7 +336,6 @@ def calculate_nmsd(data, sep_sizes, window_size_x=None, window_size_y=None, box_
         df = 1.0 * CountMs[box_index].size - 1.0
         chi_lb = stats.chi2.ppf(0.5 * alpha, df)
         chi_ub = stats.chi2.ppf(1.0 - 0.5 * alpha, df)
-
         variance_sem_lb = (df / chi_lb) * variance
         variance_sem_ub = (df / chi_ub) * variance
         ####################
