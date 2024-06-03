@@ -6,12 +6,12 @@ To install, clone this directory into your site-packages directory (eg `cd ~/.lo
 or simply download the codes
 
 # Content
-example_runcounting.py              * example code to run the counting algorithm and plot relevant curves
-test_data/example_dataset.txt       * example data set simulated from Brownian motion of non-interacting particles
-Box_Count_Stats.py                  * source codes to count particles in boxes and calculate statistics
-Numba_Box_Count_stats.py            * same as above but with just-in-time-compilation. Sometimes numba is not compatible with some machines.
-LICENSE                             * licence agreement
-Old_Codes/                          * old codes directory
+* example_runcounting.py              * example code to run the counting algorithm and plot relevant curves
+* test_data/example_dataset.txt       * example data set simulated from Brownian motion of non-interacting particles
+* Box_Count_Stats.py                  * source codes to count particles in boxes and calculate statistics
+* Numba_Box_Count_stats.py            * same as above but with just-in-time-compilation. Sometimes numba is not compatible with some machines.
+* LICENSE                             * licence agreement
+* Old_Codes/                          * old codes directory
 
 # Use
 To use
