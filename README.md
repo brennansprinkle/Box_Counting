@@ -18,9 +18,7 @@ To use
 ```py
 import Box_Counting as countoscope
 
-N2_mean, N2_std, N_stats = countoscope.calculate_nmsd(data=f"data.dat", 
-                                                             window_size_x=217.6, window_size_y=174, 
-                                                             box_sizes=Box_Ls, sep_sizes=sep)
+results = countoscope.calculate_nmsd(data=f"data.dat", window_size_x=217.6, window_size_y=174, box_sizes=Box_Ls, sep_sizes=sep)
 ```
 See the full example in `example_runcounting.py` (which also includes plotting)
 
@@ -38,13 +36,29 @@ The parameters to `calculate_nmsd` are:
 * `sep_sizes` should be an array of the same size as `box_sizes`/`box_sizes_x`/`box_sizes_y`
   * if any elements of `sep_sizes` are negative, the boxes will overlap. This causes the library to use a different algorithm to count the particles which is substantially slower. You should be careful when choosing the overlaps; if the overlap is a rational fraction of the box size then some boxes' edges will touch, leaving the counts correlated.
 
-The return values:
-* `N2_mean` and `N2_std` are arrays of shape (len(box_sizes) x Nframes) with number displacement fluctuations (N(t) - N(0))^2 in mean value over all boxes or their standard deviation over all boxes.
-* `N_stats` is an array of shape (len(box_sizes) x 6) where each row is box size, particle number mean, particle number variance, particle number variance sem_lb, particle number variance sem_ub, number of boxes counted at this box size.
+The return object:
+
+| Property                | Shape                                                      | Description                                                                             |
+|-------------------------|------------------------------------------------------------|-----------------------------------------------------------------------------------------|
+| `results.N2_mean`       | len(box_sizes) * Nframes                                   | number displacement fluctuations (N(t) - N(0))^2 mean value                             |
+| `results.N2_std`        | len(box_sizes) * Nframes                                   | number displacement fluctuations (N(t) - N(0))^2 mean value                             |
+| `results.N_mean`        | len(box_sizes)                                             | mean particles per box, averaged over all boxes                                         |
+| `results.N_mean_std`    | len(box_sizes)                                             | standard deviation of (mean particles per box in time) over all boxes                   |
+| `results.N_var`         | len(box_sizes)                                             | variance of all counts                                                                  |
+| `results.N_var_sem_ub`  | len(box_sizes)                                             |                                                                                         |
+| `results.N_var_sem_lb`  | len(box_sizes)                                             |                                                                                         |
+| `results.N_var_mod`     | len(box_sizes)                                             | variance of number of particles in box over time, averaged over all boxes               |
+| `results.N_var_mod_std` | len(box_sizes)                                             | standard deviation of (variance of number of particles in box over time) over all boxes |
+| `results.num_boxes`     | len(box_sizes)                                             | number of boxes used for each box size                                                  |
+| `results.counts`        | len(box_sizes) * max_boxes_y * max_boxes_x * num_timesteps | the raw counts in each box                                                              |
+| `results.box_coords`    | len(box_sizes) * max_boxes_y * max_boxes_x * 2             | the (x, y) positions of the lower-left corner of each box                               |
+
 
 # Dependencies
-numpy, scipy, and numba. We could make a version without numba, but I'm not sure why we would.
+numpy, scipy, and numba. We could make a version without numba, but I'm not sure why we would. By default, numba will run using as many threads as you have cores on your machine. Use `NUMBA_NUM_THREADS=16 python ....` to limit numba to a certain number of threads if you don't want it to use all your cores.
 
 # Timescale integral
 The MATLAB file `timescale_integral.m` processes the data computed using `Fast_Box_Stats.py` by computing the timescale integral.
 
+# Debugging
+If you get an annoying C error like `Segmentation fault`, try running with `NUMBA_DISABLE_JIT=1 python myscript.py` to disable numba compilation (it will take much longer), and see if you get any pure Python errors

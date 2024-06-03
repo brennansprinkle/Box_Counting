@@ -3,6 +3,7 @@ import scipy.stats as stats
 import numba
 import numba.typed
 import warnings
+import collections
 
 ###############################
 # These two function are from SE
@@ -27,34 +28,23 @@ def msd_fft1d(r):
         S2 = autocorrFFT(r)
     Q = 2 * D.sum()
     S1 = np.zeros(N)
-    for m in numba.prange(N):
+    for m in numba.prange(N): # this is called inside a prange so surely should not be a prange itself?
         Q = Q - D[m-1] - D[N-m]
         S1[m] = Q / (N-m)
     return S1 - 2 * S2
 
+# 'uint16[:,:,:](uint16[:,:,:])' supply this is as the first arg to njit and numba will compile it at the start of the execution, not when called
 @numba.njit(parallel=True, fastmath=True)
 def msd_matrix(matrix):
     # calculates the MSDs over axis 2
+    
+    assert matrix.dtype == np.dtype(np.float64), 'this function fails for integer input. You provided dtype ' + str(matrix.dtype)
+    
     MSDs = np.zeros_like(matrix)
     for i in numba.prange(matrix.shape[0]):
         for j in range(matrix.shape[1]):
-            # these two loops will be slightly slower than just having one loop
-            # that iterates through all combinations of i and j in one go,
-            # due to not fully utilising the parallel capability
             MSDs[i, j, :] = msd_fft1d(matrix[i, j, :])
-    return MSDs
 
-@numba.njit(parallel=True, fastmath=True)
-def msd_coords(Xs,Ys):
-    numRows, numCols = Xs.shape
-    MSDs = np.zeros((numRows, numCols))
-
-    for i in numba.prange(numRows):
-        xi = Xs[i, :]
-        yi = Ys[i, :]
-        row_i = msd_fft1d(xi) + msd_fft1d(yi)
-        MSDs[i,:] = row_i
-    
     return MSDs
 
 def processDataFile(filename):
@@ -111,18 +101,22 @@ def processDataArray(data):
     max_y = data[:, 1].max()
     return Xs, Ys, min_x, max_x, min_y, max_y
 
-@numba.njit
-def do_counting_at_boxsize(x, y, window_size_x, window_size_y, box_sizes_x, box_sizes_y, offset_x, offset_y, box_index, num_timesteps, SepSize_x, SepSize_y):
-    
-    num_boxes_x = int(np.floor(window_size_x / SepSize_x))
-    num_boxes_y = int(np.floor(window_size_y / SepSize_y))
+@numba.njit(parallel=True)
+def do_counting_at_boxsize(x, y, window_size_x, window_size_y, box_size_x, box_size_y, offset_x, offset_y, num_timesteps, shift_size_x, shift_size_y):
+    assert offset_x >= 0, 'currently we only handle positive offsets'
+    assert offset_y >= 0, 'currently we only handle positive offsets'
 
-    counts = np.zeros((num_boxes_x, num_boxes_y, num_timesteps), dtype=np.float32) # why do we specify the dtype here?
+    # shift_size is L + sep (in this fn, sep >= 0)
+    num_boxes_x = int(np.floor((window_size_x - offset_x) / shift_size_x))
+    num_boxes_y = int(np.floor((window_size_y - offset_y) / shift_size_y))
+
+    counts = np.zeros((num_boxes_x, num_boxes_y, num_timesteps), dtype='uint16')
     
-    num_boxes_x = int(np.floor(window_size_x / SepSize_x))
-    num_boxes_y = int(np.floor(window_size_y / SepSize_y))
-    assert num_boxes_x > 0, "Nx was zero"
-    assert num_boxes_y > 0, "Ny was zero"
+    assert num_boxes_x > 0, "num_boxes_x was zero"
+    assert num_boxes_y > 0, "num_boxes_y was zero"
+
+    assert offset_x + num_boxes_x * shift_size_x <= window_size_x # make sure that the final box doesn't overlap the edge of the window
+    assert offset_y + num_boxes_y * shift_size_y <= window_size_y
     
     for time_index in numba.prange(num_timesteps):
         xt = x[time_index]
@@ -131,52 +125,134 @@ def do_counting_at_boxsize(x, y, window_size_x, window_size_y, box_sizes_x, box_
 
         for i in range(num_points):
             # find target box
-            if xt[i] - offset_x[box_index] < 0 or yt[i] - offset_y[box_index] < 0:
+            if xt[i] - offset_x < 0 or yt[i] - offset_y < 0:
                 continue # these are points close to the origin that fall before the first box, when there's an offset
-            target_box_x = int(np.floor((xt[i] - offset_x[box_index]) / SepSize_x))
-            target_box_y = int(np.floor((yt[i] - offset_y[box_index]) / SepSize_y))
+            target_box_x = int(np.floor((xt[i] - offset_x) / shift_size_x))
+            target_box_y = int(np.floor((yt[i] - offset_y) / shift_size_y))
 
-            # if the target box doesn't entirely fit within the window, discard the point
-            if (target_box_x+1.0) * SepSize_x > window_size_x:
+            # if the particle is at the far x or y, there may not be a box covering that last little bit
+            if target_box_x >= num_boxes_x:
                 continue
-            if (target_box_y+1.0) * SepSize_y > window_size_y:
+            if target_box_y >= num_boxes_y:
                 continue
 
             # discard points that are in the sep border around the edge of the box
-            distance_into_box_x = np.fmod(xt[i], SepSize_x)
-            distance_into_box_y = np.fmod(yt[i], SepSize_y)
-            if np.abs(distance_into_box_x-0.5*SepSize_x) >= box_sizes_x[box_index]/2.0:
+            distance_into_box_x = np.fmod(xt[i] - offset_x, shift_size_x)
+            distance_into_box_y = np.fmod(yt[i] - offset_y, shift_size_y)
+            if np.abs(distance_into_box_x-0.5*shift_size_x) >= box_size_x/2.0:
                 continue
-            if np.abs(distance_into_box_y-0.5*SepSize_y) >= box_sizes_y[box_index]/2.0:
+            if np.abs(distance_into_box_y-0.5*shift_size_y) >= box_size_y/2.0:
                 continue
-                        
+
             # add this particle to the stats
-            counts[target_box_x, target_box_y, time_index] += 1.0
-            
-    return counts
+            counts[target_box_x, target_box_y, time_index] += 1
+
+    sep_size_x = shift_size_x - box_size_x
+    sep_size_y = shift_size_y - box_size_y
+    assert sep_size_x >= 0
+    assert sep_size_y >= 0
+    box_xs = np.arange(0, num_boxes_x, dtype=np.float64) * shift_size_x + offset_x + sep_size_x/2 # dtype needed in case the list happens to work as ints, then numba will be unable to unify the array later
+    box_ys = np.arange(0, num_boxes_y, dtype=np.float64) * shift_size_y + offset_y + sep_size_y/2
+       
+    return counts, box_xs, box_ys
+
+
+@numba.njit
+def mod_ceil(x):
+    # rounds such that 
+    # x.0  ->  x+1
+    # x.y  ->  x+1
+    # in the counting we need it for the case where the box size is an exact divisor of window size
+    if x % 1 == 0:
+        return x+1
+    else:
+        return np.ceil(x)
+
+@numba.njit
+def approx_lte(x, y):
+    # floating-point safe version of x <= y
+    return x <= y or bool(np.isclose(x, y))
+@numba.njit
+def approx_gte(x, y):
+    # floating-point safe version of x >= y
+    return x >= y or bool(np.isclose(x, y))
+
+@numba.njit(parallel=True)
+def do_counting_at_boxsize_new(x, y, window_size_x, window_size_y, box_size_x, box_size_y, offset_x, offset_y, num_timesteps, shift_size_x, shift_size_y):
+    assert offset_x >= 0, 'currently we only handle positive offsets'
+    assert offset_y >= 0, 'currently we only handle positive offsets'
+
+    # shift_size is L + sep (in this fn, sep >= 0)
+    num_boxes_x = int(mod_ceil((window_size_x - offset_x - box_size_x) / shift_size_x))
+    num_boxes_y = int(mod_ceil((window_size_y - offset_y - box_size_y) / shift_size_y))
+
+    counts = np.zeros((num_boxes_x, num_boxes_y, num_timesteps), dtype='uint16')
+    
+    assert num_boxes_x > 0, "num_boxes_x was zero"
+    assert num_boxes_y > 0, "num_boxes_y was zero"
+
+    assert approx_lte(offset_x + (num_boxes_x-1)*shift_size_x + 1*box_size_x, window_size_x) # make sure that the final box doesn't overlap the edge of the window
+    assert approx_lte(offset_y + (num_boxes_y-1)*shift_size_y + 1*box_size_y, window_size_y)
+    
+    for time_index in numba.prange(num_timesteps):
+        xt = x[time_index]
+        yt = y[time_index]
+        num_points = len(xt) # number of x,y points available at this timestep
+
+        for i in range(num_points):
+            # find target box
+            if xt[i] - offset_x < 0 or yt[i] - offset_y < 0:
+                continue # these are points close to the origin that fall before the first box, when there's an offset
+            target_box_x = int(np.floor((xt[i] - offset_x) / shift_size_x))
+            target_box_y = int(np.floor((yt[i] - offset_y) / shift_size_y))
+
+            # if the particle is at the far x or y, there may not be a box covering that last little bit
+            if target_box_x >= num_boxes_x:
+                continue
+            if target_box_y >= num_boxes_y:
+                continue
+
+            # discard points that are in the sep border around the edge of the box
+            # this border is actually only on the top and right sides though
+            distance_into_box_x = np.fmod(xt[i] - offset_x, shift_size_x)
+            distance_into_box_y = np.fmod(yt[i] - offset_y, shift_size_y)
+            if distance_into_box_x >= box_size_x:
+                continue
+            if distance_into_box_y >= box_size_y:
+                continue
+
+            # add this particle to the stats
+            counts[target_box_x, target_box_y, time_index] += 1
+
+    box_xs = np.arange(0, num_boxes_x, dtype=np.float64) * shift_size_x + offset_x # dtype needed in case shift_size_x and offset happen to be int, then numba will be unable to unify the array later
+    box_ys = np.arange(0, num_boxes_y, dtype=np.float64) * shift_size_y + offset_y
+       
+    return counts, box_xs, box_ys
 
 @numba.njit(fastmath=True)
-def count_boxes(x, y, window_size_x, window_size_y, box_sizes_x, box_sizes_y, sep_sizes, offset_x=None, offset_y=None):
+def count_boxes(x, y, window_size_x, window_size_y, box_sizes_x, box_sizes_y, sep_sizes, offset_xs, offset_ys, use_old_overlap):
     # offset_x and offset_y will offset the whole grid of boxes from the origin
     # TODO: if offset is so big to reduce the number of boxes we might have a problem
 
-    if offset_x == None:
-        offset_x = np.zeros_like(box_sizes_x)
-    if offset_y == None:
-        offset_y = np.zeros_like(box_sizes_y)
-    assert offset_x.shape == box_sizes_x.shape
-    assert offset_y.shape == box_sizes_y.shape
+    if offset_xs is None:
+        offset_xs = np.zeros_like(box_sizes_x)
+    if offset_ys is None:
+        offset_ys = np.zeros_like(box_sizes_y)
+    assert offset_xs.shape == box_sizes_x.shape
+    assert offset_ys.shape == box_sizes_y.shape
 
     CountMs = numba.typed.List()
+    all_box_xs = numba.typed.List()
+    all_box_ys = numba.typed.List()
     # each of the arrays that gets appended in here will have a different shape
-    # which seems to be why we use a list not an ndarray
+    # which is why we use a list not an ndarray
 
     for box_index in range(len(box_sizes_x)):
         num_timesteps = len(x)
         
         overlap = sep_sizes[box_index] < 0 # do the boxes overlap?
         
-        print("Counting boxes L =", box_sizes_x[box_index], "*", box_sizes_y[box_index], ", sep =", sep_sizes[box_index], ", num =", "overlapped" if overlap else "")
+        print("Counting boxes L =", box_sizes_x[box_index], "*", box_sizes_y[box_index], ", sep =", sep_sizes[box_index], "overlapped" if overlap else "")
 
         if overlap and (box_sizes_x[box_index] % np.abs(sep_sizes[box_index]) == 0 or box_sizes_y[box_index] % np.abs(sep_sizes[box_index]) == 0):
             print('Negative overlap is an exact divisor of box size. This will lead to correlated boxes.')
@@ -185,46 +261,127 @@ def count_boxes(x, y, window_size_x, window_size_y, box_sizes_x, box_sizes_y, se
         
         if overlap:
 
-            x_shift_size = box_sizes_x[box_index] + sep_sizes[box_index] # remember sep is negative in this regime
-            y_shift_size = box_sizes_y[box_index] + sep_sizes[box_index] # remember sep is negative in this regime
+            if use_old_overlap:
+                # if the boxes overlap we cannot use the original method (below)
+                # so we use this method instead, which is perhaps 25 times slower
+                SepSize_x = box_sizes_x[box_index] + sep_sizes[box_index]
+                SepSize_y = box_sizes_y[box_index] + sep_sizes[box_index]
+                num_boxes_x = int(np.ceil((window_size_x - offset_xs[box_index] - box_sizes_x[box_index]) / SepSize_x))
+                num_boxes_y = int(np.ceil((window_size_y - offset_ys[box_index] - box_sizes_y[box_index]) / SepSize_y))
+                Counts = np.zeros((num_boxes_x, num_boxes_y, num_timesteps), dtype=np.uint16)
 
-            num_x_shifts = int(box_sizes_x[box_index] // x_shift_size)
-            num_y_shifts = int(box_sizes_y[box_index] // y_shift_size)
+                box_xs = np.arange(0, num_boxes_x, dtype=np.float64) * SepSize_x + offset_xs[box_index] # dtype needed in case the arange happens to work as ints, then numba will be unable to unify the array later
+                box_ys = np.arange(0, num_boxes_y, dtype=np.float64) * SepSize_y + offset_ys[box_index]
 
-            SepSize_x = num_x_shifts * x_shift_size # SepSize is (in non overlapped sense) L+sep, needs a proper namev
-            SepSize_y = num_y_shifts * y_shift_size
+                for time_index in numba.prange(num_timesteps):
+                    xt = x[time_index]
+                    yt = y[time_index]
+                    num_points = len(xt) # number of x,y points available at this timestep
 
-            total_num_boxes_x = int(np.floor(window_size_x / SepSize_x) * num_x_shifts)
-            total_num_boxes_y = int(np.floor(window_size_y / SepSize_y) * num_y_shifts)
-            Counts = np.zeros((total_num_boxes_x, total_num_boxes_y, num_timesteps), dtype=np.float32)
+                    for box_x_index in range(num_boxes_x):
+                        for box_y_index in range(num_boxes_y):
 
-            for x_shift_index in range(num_x_shifts):
-                x_shift = x_shift_size * x_shift_index
+                            box_x_min = box_xs[box_x_index]
+                            box_x_max = box_x_min + box_sizes_x[box_index]
+                            box_y_min = box_ys[box_y_index]
+                            box_y_max = box_y_min + box_sizes_y[box_index]
 
-                this_offset_x = offset_x + x_shift
+                            assert box_x_max + sep_sizes[box_index]/2 < window_size_x
+                            assert box_y_max + sep_sizes[box_index]/2 < window_size_y
 
-                for y_shift_index in range(num_y_shifts):
-                    y_shift = y_shift_size * y_shift_index
-                    this_offset_y = offset_y + y_shift
+                            for point in range(num_points):
+                                if box_x_min < xt[point] and xt[point] <= box_x_max and box_y_min < yt[point] and yt[point] <= box_y_max:
+                                    Counts[box_x_index, box_y_index, time_index] += 1.0
 
-                    Counts[x_shift_index::num_x_shifts, y_shift_index::num_y_shifts, :] = do_counting_at_boxsize(x, y, window_size_x, window_size_y, box_sizes_x, box_sizes_y, this_offset_x, this_offset_y, box_index, num_timesteps, SepSize_x, SepSize_y)
-                    # now we have the counts, we have to kind of "inter-tile" them to get the (num boxes x) * (num_boxes y) * (num timesteps) shape in a sensible way
+            else:
+                # here is a 1d example to explain the variable names
+                #  ___________________
+                #  | ------  ------  |
+                #  |     ------      |
+                #  |_________________|
+                #    <---->            box_size
+                #    <-->              global shift - distance between start of one box and start of next box, boxes may be counted in different iterations
+                #    <------>          local shift - distance between start of one box and start of the next box that ends up *in the same iteration*
+                #   in this example, num_iters = 2
 
+                global_shift_x = box_sizes_x[box_index] + sep_sizes[box_index] # L+sep, sep < 0
+                global_shift_y = box_sizes_y[box_index] + sep_sizes[box_index]
+
+                num_x_iters = int(np.ceil(box_sizes_x[box_index] / global_shift_x))
+                num_y_iters = int(np.ceil(box_sizes_y[box_index] / global_shift_y))
+
+                local_shift_x = num_x_iters * global_shift_x
+                local_shift_y = num_y_iters * global_shift_y
+
+                total_num_boxes_x = int(mod_ceil((window_size_x - offset_xs[box_index] - box_sizes_x[box_index]) / global_shift_x))
+                total_num_boxes_y = int(mod_ceil((window_size_y - offset_ys[box_index] - box_sizes_y[box_index]) / global_shift_y))
+                Counts = np.zeros((total_num_boxes_x, total_num_boxes_y, num_timesteps), dtype=np.uint16)
+
+                box_xs = np.full((total_num_boxes_x,), np.nan)
+                box_ys = np.full((total_num_boxes_y,), np.nan)
+
+                for x_shift_index in range(num_x_iters):
+                    x_shift = global_shift_x * x_shift_index
+
+                    this_offset_x = offset_xs[box_index] + x_shift
+                    
+                    for y_shift_index in range(num_y_iters):
+                        y_shift = global_shift_y * y_shift_index
+                        this_offset_y = offset_ys[box_index] + y_shift
+                        
+                        counts_temp, box_xs_temp, box_ys_temp = do_counting_at_boxsize_new(x, y, window_size_x, window_size_y, 
+                            box_sizes_x[box_index], box_sizes_y[box_index], this_offset_x, this_offset_y, num_timesteps, 
+                            local_shift_x, local_shift_y)
+                        # print(counts_temp.shape, 'into', Counts[x_shift_index::num_x_iters, y_shift_index::num_y_iters, :].shape)
+                        Counts[x_shift_index::num_x_iters, y_shift_index::num_y_iters, :] = counts_temp # now we have the counts, we have to kind of "inter-tile" them to get the (num boxes x) * (num_boxes y) * (num timesteps) shape in a sensible way
+                        box_xs[x_shift_index::num_x_iters] = box_xs_temp
+                        box_ys[y_shift_index::num_y_iters] = box_ys_temp
+        
         else:
-            SepSize_x = box_sizes_x[box_index] + sep_sizes[box_index] # SepSize is (in non overlapped sense) L+sep, needs a proper name
-            SepSize_y = box_sizes_y[box_index] + sep_sizes[box_index]
-
-            Counts = do_counting_at_boxsize(x, y, window_size_x, window_size_y, box_sizes_x, box_sizes_y, offset_x, offset_y, box_index, num_timesteps, SepSize_x, SepSize_y)
+            if use_old_overlap:
+                local_shift_x = box_sizes_x[box_index] + sep_sizes[box_index] # SepSize is (in non overlapped sense) L+sep, needs a proper name
+                local_shift_y = box_sizes_y[box_index] + sep_sizes[box_index]
+                Counts, box_xs, box_ys = do_counting_at_boxsize(x, y, window_size_x, window_size_y, box_sizes_x[box_index], box_sizes_y[box_index], offset_xs[box_index], offset_ys[box_index], num_timesteps, local_shift_x, local_shift_y)
+            
+            else:
+                local_shift_x = box_sizes_x[box_index] + sep_sizes[box_index] # SepSize is (in non overlapped sense) L+sep, needs a proper name
+                local_shift_y = box_sizes_y[box_index] + sep_sizes[box_index]
+                offset_x = offset_xs[box_index] + sep_sizes[box_index]/2 # this is so with non-overlapped boxes, the first box is not at (0, 0)
+                offset_y = offset_ys[box_index] + sep_sizes[box_index]/2 # for backward compatibility
+                Counts, box_xs, box_ys = do_counting_at_boxsize_new(x, y, window_size_x, window_size_y, box_sizes_x[box_index], box_sizes_y[box_index], offset_x, offset_y, num_timesteps, local_shift_x, local_shift_y)
 
         CountMs.append(Counts)
+        all_box_xs.append(box_xs)
+        all_box_ys.append(box_ys)
 
     print("Done with counting")
-    return CountMs
+    return CountMs, all_box_xs, all_box_ys
+
+@numba.njit
+# numba cannot handle `np.var(counts, axis=2)` so we write it ourselves
+def numba_var_3d_axis2(array):
+    vars = np.zeros((array.shape[0], array.shape[1]))
+    for i in range(array.shape[0]):
+        for j in range(array.shape[1]):
+            vars[i, j] = np.var(array[i, j, :])
+    return vars
+
+@numba.njit
+# numba cannot handle `np.mean(counts, axis=2)` so we write it ourselves
+def numba_mean_3d_axis2(array):
+    means = np.zeros((array.shape[0], array.shape[1]))
+    for i in range(array.shape[0]):
+        for j in range(array.shape[1]):
+            means[i, j] = np.mean(array[i, j, :])
+    return means
+
 
 @numba.njit(fastmath=True)
-# this jitting is probably pointless, no?
-def computeMeanAndSecondMoment(matrix):
-    return np.mean(matrix), np.var(matrix)
+def computeMeanAndSecondMoment(counts):
+    # counts is shape (num boxes x) * (num boxes y) * (num timesteps)
+    mean_per_box = numba_mean_3d_axis2(counts)
+    variance_per_box = numba_var_3d_axis2(counts)
+    return mean_per_box.mean(), variance_per_box.mean(), mean_per_box.std(), variance_per_box.std()
 
 def check_provided_box_sizes(box_sizes, box_sizes_x, box_sizes_y, sep_sizes):
     if box_sizes is not None:
@@ -298,7 +455,105 @@ def load_data_and_check_window_size(data, window_size_x, window_size_y):
 
     return Xs, Ys, window_size_x, window_size_y
 
-def calculate_nmsd(data, sep_sizes, window_size_x=None, window_size_y=None, box_sizes=None, box_sizes_x=None, box_sizes_y=None):
+def calculate_nmsd(data, sep_sizes, window_size_x=None, window_size_y=None, box_sizes=None, box_sizes_x=None, box_sizes_y=None, offset_xs=None, offset_ys=None, use_old_overlap=False, return_counts=False):
+    print(f'Will use {numba.get_num_threads()} threads')
+
+    # input parameter processing
+    box_sizes_x, box_sizes_y, sep_sizes = check_provided_box_sizes(box_sizes, box_sizes_x, box_sizes_y, sep_sizes)
+    
+    # load the data and check it
+    Xs, Ys, window_size_x, window_size_y = load_data_and_check_window_size(data, window_size_x, window_size_y)
+
+    # offset param checking, should do more!
+    if offset_xs == None:
+        offset_xs = np.zeros_like(box_sizes_x)
+    if offset_ys == None:
+        offset_ys = np.zeros_like(box_sizes_x)
+    offset_xs = np.array(offset_xs)
+    offset_ys = np.array(offset_ys)
+    assert offset_xs.shape == box_sizes_x.shape
+    assert offset_ys.shape == box_sizes_x.shape
+
+    assert np.all(box_sizes_x < window_size_x), "None of box_sizes(_x) can be bigger than window_size_x"
+    assert np.all(box_sizes_y < window_size_y), "None of box_sizes(_y) can be bigger than window_size_y"
+    assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_x"
+    assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_y"
+
+    # now do the actual counting
+    Xnb = numba.typed.List(np.array(xi) for xi in Xs) # TODO why is this defined here not inside count_boxes?
+    Ynb = numba.typed.List(np.array(yi) for yi in Ys) # TODO why is this defined here not inside count_boxes?
+    print("Compiling fast counting function")
+    CountMs, box_xs, box_ys = count_boxes(Xnb, Ynb, window_size_x=window_size_x, window_size_y=window_size_y,
+                          box_sizes_x=box_sizes_x, box_sizes_y=box_sizes_y, sep_sizes=sep_sizes,
+                          offset_xs=offset_xs, offset_ys=offset_ys, use_old_overlap=use_old_overlap)
+
+    num_box_sizes = len(box_sizes_x)
+
+    MSD_means = np.zeros((num_box_sizes, len(Xs)))
+    MSD_stds  = np.zeros((num_box_sizes, len(Xs)))
+
+    N_mean        = np.full(num_box_sizes, np.nan)
+    N_var_mod     = np.full(num_box_sizes, np.nan)
+    N_var_sem_lb  = np.full(num_box_sizes, np.nan)
+    N_var_sem_ub  = np.full(num_box_sizes, np.nan)
+    num_boxes     = np.full(num_box_sizes, np.nan)
+    N_var         = np.full(num_box_sizes, np.nan)
+    N_mean_std    = np.full(num_box_sizes, np.nan)
+    N_var_mod_std = np.full(num_box_sizes, np.nan)
+
+    print('Compiling MSD and mean functions')
+    for box_index in range(num_box_sizes): # why isn't this a numba.prange?
+        print("Processing boxes", box_index+1, "of", num_box_sizes)
+
+        mean_N, variance, mean_N_std, variance_std = computeMeanAndSecondMoment(CountMs[box_index])
+
+        alpha = 0.01
+        df = 1.0 * CountMs[box_index].size - 1.0
+        chi_lb = stats.chi2.ppf(0.5 * alpha, df)
+        chi_ub = stats.chi2.ppf(1.0 - 0.5 * alpha, df)
+        variance_sem_lb = (df / chi_lb) * variance
+        variance_sem_ub = (df / chi_ub) * variance
+
+        N_mean       [box_index] = mean_N
+        N_mean_std   [box_index] = mean_N_std # after taking the mean particles in each box over time, this is the std.dev over all boxes
+        N_var_mod    [box_index] = variance
+        N_var_mod_std[box_index] = variance_std
+        N_var_sem_lb [box_index] = variance_sem_lb
+        N_var_sem_ub [box_index] = variance_sem_ub
+        num_boxes    [box_index] = CountMs[box_index].shape[0] * CountMs[box_index].shape[1] # number of boxes counted over
+        N_var        [box_index] = np.var(CountMs[box_index]) # after taking the mean particles in each box over time, this is the std.dev over all boxes
+
+        a = CountMs[box_index].astype('float64')
+        # ^^^ note this copies the array, so could be bad for RAM
+        # could this be float32?
+        MSDs = msd_matrix(a)
+
+        MSD_means[box_index, :] = np.mean(MSDs, axis=(0, 1))
+        MSD_stds [box_index, :] = np.std (MSDs, axis=(0, 1))
+
+    # we make versions of box_xs/box_ys padded with nan, so that it has a homogeneous shape, and can be a numpy array
+    max_num_boxes_x = max([b.size for b in box_xs])
+    max_num_boxes_y = max([b.size for b in box_ys])
+    all_coords = np.full((num_box_sizes, max_num_boxes_y, max_num_boxes_x, 2), np.nan)
+    for i in range(len(CountMs)):
+        box_coords_x, box_coords_y = np.meshgrid(box_xs[i], box_ys[i])
+        box_coords = np.stack([box_coords_x, box_coords_y], axis=2)
+        all_coords[i, :box_ys[i].size, :box_xs[i].size, :] = box_coords
+    
+    if return_counts:
+        print('Making counts array')
+        # we make a new version of CountsMs padded with nan, so that it has a homogeneous shape, and can be a numpy array
+        all_counts = np.full((num_box_sizes, max_num_boxes_x, max_num_boxes_y, CountMs[0].shape[2]), np.nan) # this data is actually uint16, but the array has to be float because you can't store nan in int arrays; only float
+        for i in range(len(CountMs)):
+            all_counts[i, :CountMs[i].shape[0], :CountMs[i].shape[1], :] = CountMs[i]
+    else:
+        all_counts = None
+
+    Results = collections.namedtuple('Results', ['nmsd', 'nmsd_std', 'N_mean', 'N_var', 'N_var_sem_lb', 'N_var_sem_ub', 'num_boxes', 'N_var_mod', 'N_mean_std', 'N_var_mod_std', 'counts', 'box_coords'])
+    return Results(nmsd=MSD_means, nmsd_std=MSD_stds, N_mean=N_mean, N_var_mod=N_var_mod,
+                       N_var_sem_lb=N_var_sem_lb, N_var_sem_ub=N_var_sem_ub, num_boxes=num_boxes,
+                       N_var=N_var, N_mean_std=N_mean_std, N_var_mod_std=N_var_mod_std,
+                       counts=all_counts, box_coords=all_coords)
     # input parameter processing
     box_sizes_x, box_sizes_y, sep_sizes = check_provided_box_sizes(box_sizes, box_sizes_x, box_sizes_y, sep_sizes)
     
