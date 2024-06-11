@@ -55,7 +55,7 @@ The return object:
 
 
 # Dependencies
-numpy, scipy, and numba. We could make a version without numba, but I'm not sure why we would. By default, numba will run using as many threads as you have cores on your machine. Use `NUMBA_NUM_THREADS=16 python ....` to limit numba to a certain number of threads if you don't want it to use all your cores.
+numpy, scipy, and numba. We could make a version without numba, but I'm not sure why we would. By default, numba will run using as many threads as you have cores on your machine. Use `NUMBA_NUM_THREADS=16 python ....` to limit numba to a certain number of threads if you don't want it to use all your cores. If `tqdm` is installed, we will use it for nice progress bars.
 
 # Timescale integral
 The MATLAB file `timescale_integral.m` processes the data computed using `Fast_Box_Stats.py` by computing the timescale integral.

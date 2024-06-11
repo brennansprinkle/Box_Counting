@@ -4,12 +4,19 @@ import numba
 import numba.typed
 import warnings
 import collections
+import multiprocessing
+import functools
 
-###############################
-# These two function are from SE
+
+# we use tqdm for nice progress bars if it is available
+try:
+    import tqdm
+    progressbar = functools.partial(tqdm.tqdm, leave=False)
+except ImportError:
+    progressbar = lambda x, desc=None, total=None: x
+
+# These two functions are from SE
 # https://stackoverflow.com/questions/34222272/computing-mean-square-displacement-using-python-and-fft
-##############################
-
 def autocorrFFT(x):
     N = len(x)
     F = np.fft.fft(x, n=2*N)  # 2*N because of zero-padding
@@ -21,29 +28,41 @@ def autocorrFFT(x):
 
 @numba.njit(fastmath=True)
 def msd_fft1d(r):
+    r = r.astype(np.float64) # if the dtype is int, it will propagate through and we'll get the wrong answer
+
     N = len(r)
     D = np.square(r)
     D = np.append(D, 0)
     with numba.objmode(S2='float64[:]'):
-        S2 = autocorrFFT(r)
+        S2 = autocorrFFT(r) # we have to run in objmode cause numba does not support fft
     Q = 2 * D.sum()
     S1 = np.zeros(N)
-    for m in numba.prange(N): # this is called inside a prange so surely should not be a prange itself?
+    for m in range(N):
         Q = Q - D[m-1] - D[N-m]
         S1[m] = Q / (N-m)
     return S1 - 2 * S2
 
-# 'uint16[:,:,:](uint16[:,:,:])' supply this is as the first arg to njit and numba will compile it at the start of the execution, not when called
-@numba.njit(parallel=True, fastmath=True)
+
+def msd_matrix_slice(matrix_slice):
+    MSDs = np.zeros(matrix_slice.shape, dtype=np.float64)
+
+    for j in range(matrix_slice.shape[0]):
+        MSDs[j, :] = msd_fft1d(matrix_slice[j, :])
+    return MSDs
+    
 def msd_matrix(matrix):
     # calculates the MSDs over axis 2
+
+    slices = [matrix[i, :, :] for i in range(matrix.shape[0])]
     
-    assert matrix.dtype == np.dtype(np.float64), 'this function fails for integer input. You provided dtype ' + str(matrix.dtype)
-    
-    MSDs = np.zeros_like(matrix)
-    for i in numba.prange(matrix.shape[0]):
-        for j in range(matrix.shape[1]):
-            MSDs[i, j, :] = msd_fft1d(matrix[i, j, :])
+    # we used to do this parralelisation in numba, but in testing, I found it was faster with multiprocessing, idk why
+    with multiprocessing.Pool(16) as pool:
+        results = list(progressbar(pool.imap(msd_matrix_slice, slices), total=len(slices), desc='msd matrix'))
+
+    MSDs = np.zeros(matrix.shape)
+
+    for i, MSD in enumerate(results):
+        MSDs[i, :, :] = MSD
 
     return MSDs
 
@@ -51,6 +70,8 @@ def processDataFile(filename):
     data = np.fromfile(filename, dtype=float, sep=' ')
     #all_data = np.loadtxt('data/0.34_EKRM_trajs.dat', delimiter=',', skiprows=1)
     data = data.reshape((-1, 4))
+
+    # print(f'data size (file) {data.nbytes/1e9}GB')
     
     return processDataArray(data)
 
@@ -70,8 +91,11 @@ def processDataArray(data):
         num_points_at_time[t-t0] += 1
  
     # then we add the particle coordinates into the numpy arrays
-    Xs_ = np.full((Nframes, num_points_at_time.max()), np.nan)
-    Ys_ = np.full((Nframes, num_points_at_time.max()), np.nan)
+    Xs = np.full((Nframes, num_points_at_time.max()), np.nan)
+    Ys = np.full((Nframes, num_points_at_time.max()), np.nan)
+    # we used to have these in lists of lists, then lists of numpy arrays, but now just one numpy array
+    # this is much more memory efficient (unless you have a very uneven number of particles per timestep, but we shouldn't)
+
     num_points_at_time = np.zeros((Nframes), dtype='int')
 
     for line_i in range(data.shape[0]):
@@ -82,18 +106,10 @@ def processDataArray(data):
         t = round(values[2])
 
         p = num_points_at_time[t-t0]
-        Xs_[t-t0, p] = x
-        Ys_[t-t0, p] = y
+        Xs[t-t0, p] = x
+        Ys[t-t0, p] = y
 
         num_points_at_time[t-t0] += 1
-
-    # finally we convert them back to python lists
-    # perhaps we could skip this step in the future
-    Xs = []
-    Ys = []
-    for t_index in range(Nframes):
-        Xs.append(list(Xs_[t_index, 0:num_points_at_time[t_index]]))
-        Ys.append(list(Ys_[t_index, 0:num_points_at_time[t_index]]))
 
     min_x = data[:, 0].min()
     max_x = data[:, 0].max()
@@ -119,9 +135,10 @@ def do_counting_at_boxsize(x, y, window_size_x, window_size_y, box_size_x, box_s
     assert offset_y + num_boxes_y * shift_size_y <= window_size_y
     
     for time_index in numba.prange(num_timesteps):
-        xt = x[time_index]
-        yt = y[time_index]
-        num_points = len(xt) # number of x,y points available at this timestep
+        xt = x[time_index, :]
+        yt = y[time_index, :]
+        valid_points = ~np.isnan(xt)
+        num_points = np.sum(valid_points) # number of x,y points available at this timestep
 
         for i in range(num_points):
             # find target box
@@ -185,19 +202,20 @@ def do_counting_at_boxsize_new(x, y, window_size_x, window_size_y, box_size_x, b
     # shift_size is L + sep (in this fn, sep >= 0)
     num_boxes_x = int(mod_ceil((window_size_x - offset_x - box_size_x) / shift_size_x))
     num_boxes_y = int(mod_ceil((window_size_y - offset_y - box_size_y) / shift_size_y))
-
-    counts = np.zeros((num_boxes_x, num_boxes_y, num_timesteps), dtype='uint16')
     
     assert num_boxes_x > 0, "num_boxes_x was zero"
     assert num_boxes_y > 0, "num_boxes_y was zero"
+
+    counts = np.zeros((num_boxes_x, num_boxes_y, num_timesteps), dtype='uint16')
 
     assert approx_lte(offset_x + (num_boxes_x-1)*shift_size_x + 1*box_size_x, window_size_x) # make sure that the final box doesn't overlap the edge of the window
     assert approx_lte(offset_y + (num_boxes_y-1)*shift_size_y + 1*box_size_y, window_size_y)
     
     for time_index in numba.prange(num_timesteps):
-        xt = x[time_index]
-        yt = y[time_index]
-        num_points = len(xt) # number of x,y points available at this timestep
+        xt = x[time_index, :]
+        yt = y[time_index, :]
+        valid_points = ~np.isnan(xt)
+        num_points = np.sum(valid_points) # number of x,y points available at this timestep
 
         for i in range(num_points):
             # find target box
@@ -274,9 +292,10 @@ def count_boxes(x, y, window_size_x, window_size_y, box_sizes_x, box_sizes_y, se
                 box_ys = np.arange(0, num_boxes_y, dtype=np.float64) * SepSize_y + offset_ys[box_index]
 
                 for time_index in numba.prange(num_timesteps):
-                    xt = x[time_index]
-                    yt = y[time_index]
-                    num_points = len(xt) # number of x,y points available at this timestep
+                    xt = x[time_index, :]
+                    yt = y[time_index, :]
+                    valid_points = ~np.isnan(xt)
+                    num_points = np.sum(valid_points) # number of x,y points available at this timestep
 
                     for box_x_index in range(num_boxes_x):
                         for box_y_index in range(num_boxes_y):
@@ -448,10 +467,6 @@ def load_data_and_check_window_size(data, window_size_x, window_size_y):
         warnings.warn(f'x data fills less than {100*(max_x-min_x)/window_size_x:.0f}% of the window. Is window_size_x correct?')
     if (max_y-min_y) < warn_empty_thresh * window_size_y:
         warnings.warn(f'y data fills less than {100*(max_y-min_y)/window_size_y:.0f}% of the window. Is window_size_y correct?')
-    
-    for x_list, y_list in zip(Xs, Ys):
-        assert np.all(~np.isnan(x_list)), "nan was found in Xs"
-        assert np.all(~np.isnan(y_list)), "nan was found in Ys"
 
     return Xs, Ys, window_size_x, window_size_y
 
@@ -463,6 +478,7 @@ def calculate_nmsd(data, sep_sizes, window_size_x=None, window_size_y=None, box_
     
     # load the data and check it
     Xs, Ys, window_size_x, window_size_y = load_data_and_check_window_size(data, window_size_x, window_size_y)
+    del data # don't need this any more (it could be a big array in ram)
 
     # offset param checking, should do more!
     if offset_xs == None:
@@ -480,17 +496,18 @@ def calculate_nmsd(data, sep_sizes, window_size_x=None, window_size_y=None, box_
     assert np.all(sep_sizes < window_size_y), "None of sep_sizes can be bigger than window_size_y"
 
     # now do the actual counting
-    Xnb = numba.typed.List(np.array(xi) for xi in Xs) # TODO why is this defined here not inside count_boxes?
-    Ynb = numba.typed.List(np.array(yi) for yi in Ys) # TODO why is this defined here not inside count_boxes?
     print("Compiling fast counting function")
-    CountMs, box_xs, box_ys = count_boxes(Xnb, Ynb, window_size_x=window_size_x, window_size_y=window_size_y,
+    CountMs, box_xs, box_ys = count_boxes(Xs, Ys, window_size_x=window_size_x, window_size_y=window_size_y,
                           box_sizes_x=box_sizes_x, box_sizes_y=box_sizes_y, sep_sizes=sep_sizes,
                           offset_xs=offset_xs, offset_ys=offset_ys, use_old_overlap=use_old_overlap)
+    
+    num_timesteps = Xs.shape[0]
+    del Xs, Ys # don't need these any more so save some RAM
 
     num_box_sizes = len(box_sizes_x)
 
-    MSD_means = np.zeros((num_box_sizes, len(Xs)))
-    MSD_stds  = np.zeros((num_box_sizes, len(Xs)))
+    MSD_means = np.zeros((num_box_sizes, num_timesteps))
+    MSD_stds  = np.zeros((num_box_sizes, num_timesteps))
 
     N_mean        = np.full(num_box_sizes, np.nan)
     N_var_mod     = np.full(num_box_sizes, np.nan)
@@ -506,6 +523,7 @@ def calculate_nmsd(data, sep_sizes, window_size_x=None, window_size_y=None, box_
         print("Processing boxes", box_index+1, "of", num_box_sizes)
 
         mean_N, variance, mean_N_std, variance_std = computeMeanAndSecondMoment(CountMs[box_index])
+        variance_original = np.var(CountMs[box_index])
 
         alpha = 0.01
         df = 1.0 * CountMs[box_index].size - 1.0
@@ -516,17 +534,14 @@ def calculate_nmsd(data, sep_sizes, window_size_x=None, window_size_y=None, box_
 
         N_mean       [box_index] = mean_N
         N_mean_std   [box_index] = mean_N_std # after taking the mean particles in each box over time, this is the std.dev over all boxes
-        N_var_mod    [box_index] = variance
+        N_var_mod    [box_index] = variance # this is the variance in counts for one box, averaged over all boxes
         N_var_mod_std[box_index] = variance_std
         N_var_sem_lb [box_index] = variance_sem_lb
         N_var_sem_ub [box_index] = variance_sem_ub
         num_boxes    [box_index] = CountMs[box_index].shape[0] * CountMs[box_index].shape[1] # number of boxes counted over
-        N_var        [box_index] = np.var(CountMs[box_index]) # after taking the mean particles in each box over time, this is the std.dev over all boxes
-
-        a = CountMs[box_index].astype('float64')
-        # ^^^ note this copies the array, so could be bad for RAM
-        # could this be float32?
-        MSDs = msd_matrix(a)
+        N_var        [box_index] = variance_original # this is simply the variance over all counts
+        
+        MSDs = msd_matrix(CountMs[box_index])
 
         MSD_means[box_index, :] = np.mean(MSDs, axis=(0, 1))
         MSD_stds [box_index, :] = np.std (MSDs, axis=(0, 1))
